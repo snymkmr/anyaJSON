@@ -1,0 +1,97 @@
+{
+  "name": "anyjson",
+  "displayName": "AnyJSON",
+  "description": "Format, minify, and lint JSON documents in Visual Studio Code.",
+  "version": "0.1.0",
+  "publisher": "SanyamKumar",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/snymkmr/anyJSON.git"
+  },
+  "icon": "JSON-icon.png",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Formatters",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:json",
+    "onCommand:anyjson.formatJson",
+    "onCommand:anyjson.minifyJson",
+    "onCommand:anyjson.lintJson"
+  ],
+  "main": "./extension.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "anyjson.formatJson",
+        "title": "AnyJSON: Format JSON Document"
+      },
+      {
+        "command": "anyjson.minifyJson",
+        "title": "AnyJSON: Minify JSON Document"
+      },
+      {
+        "command": "anyjson.lintJson",
+        "title": "AnyJSON: Lint JSON Document"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "anyjson.formatJson",
+          "when": "editorLangId == json || resourceExtname == .json",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "anyjson.minifyJson",
+          "when": "editorLangId == json || resourceExtname == .json",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "anyjson.lintJson",
+          "when": "editorLangId == json || resourceExtname == .json",
+          "group": "1_modification@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "anyjson.formatJson",
+          "when": "resourceExtname == .json",
+          "group": "2_workspace@1"
+        },
+        {
+          "command": "anyjson.minifyJson",
+          "when": "resourceExtname == .json",
+          "group": "2_workspace@2"
+        },
+        {
+          "command": "anyjson.lintJson",
+          "when": "resourceExtname == .json",
+          "group": "2_workspace@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AnyJSON",
+      "properties": {
+        "anyjson.lintOnChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lint JSON after edits. Linting is debounced; disable this for very large documents if it slows editing."
+        },
+        "anyjson.lintOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lint JSON when a document is saved."
+        }
+      }
+    }
+  }
+}
