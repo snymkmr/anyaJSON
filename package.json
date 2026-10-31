@@ -2,7 +2,7 @@
   "name": "anyjson",
   "displayName": "AnyJSON",
   "description": "Format, minify, and lint JSON documents in Visual Studio Code.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "SanyamKumar",
   "repository": {
     "type": "git",
