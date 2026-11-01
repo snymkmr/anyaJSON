@@ -14,7 +14,18 @@ try {
   Module._load = originalLoad;
 }
 
-const { parseJson, transformJson } = extension;
+const { parseJson, transformJson, getFilteredJsonTableRows } = extension;
+
+test('supports case-insensitive exact-value filtering', () => {
+  const preview = {
+    columns: ['city'],
+    rows: [{ city: 'Toronto' }, { city: 'Toronto West' }]
+  };
+
+  assert.equal(getFilteredJsonTableRows(preview, 'toro').length, 2);
+  assert.deepEqual(getFilteredJsonTableRows(preview, 'toronto', true), [{ city: 'Toronto' }]);
+  assert.deepEqual(getFilteredJsonTableRows(preview, '  TORONTO  ', true), [{ city: 'Toronto' }]);
+});
 
 test('parses JSON values, arrays, objects, and escaped strings', () => {
   const parsed = parseJson('{"null":null,"truth":true,"number":-1.25e+3,"items":[false,"line\\nbreak"]}');
