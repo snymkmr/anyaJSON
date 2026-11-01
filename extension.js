@@ -244,7 +244,7 @@ function transformJson(text, minify, options = {}) {
 }
 
 function activate(context) {
-  const diagnostics = vscode.languages.createDiagnosticCollection('anyjson');
+  const diagnostics = vscode.languages.createDiagnosticCollection('anyajson');
   const validationStates = new Map();
   const validationTimers = new Map();
   const pendingValidations = new Set();
@@ -261,7 +261,7 @@ function activate(context) {
     const key = document.uri.toString();
     statusBar.show();
     statusBar.command = {
-      command: 'anyjson.lintJson',
+      command: 'anyajson.lintJson',
       title: 'Lint JSON',
       arguments: [document.uri]
     };
@@ -382,9 +382,9 @@ function activate(context) {
         }
       }
     }),
-    vscode.commands.registerCommand('anyjson.formatJson', (resource) => runTransform(resource, false)),
-    vscode.commands.registerCommand('anyjson.minifyJson', (resource) => runTransform(resource, true)),
-    vscode.commands.registerCommand('anyjson.lintJson', async (resource) => {
+    vscode.commands.registerCommand('anyajson.formatJson', (resource) => runTransform(resource, false)),
+    vscode.commands.registerCommand('anyajson.minifyJson', (resource) => runTransform(resource, true)),
+    vscode.commands.registerCommand('anyajson.lintJson', async (resource) => {
       let document;
       try {
         document = await resolveJsonDocument(resource);
@@ -407,14 +407,14 @@ function activate(context) {
       }
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
-      if (vscode.workspace.getConfiguration('anyjson').get('lintOnChange', true)) {
+      if (vscode.workspace.getConfiguration('anyajson').get('lintOnChange', true)) {
         scheduleLint(event.document);
       } else {
         updateStatusBar();
       }
     }),
     vscode.workspace.onDidSaveTextDocument((document) => {
-      if (vscode.workspace.getConfiguration('anyjson').get('lintOnSave', true)) {
+      if (vscode.workspace.getConfiguration('anyajson').get('lintOnSave', true)) {
         scheduleLint(document);
       } else {
         updateStatusBar();

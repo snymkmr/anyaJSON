@@ -14,7 +14,7 @@ AnyaJSON also lints open JSON documents after edits (debounced by 500 ms) and wh
 
 ## Settings
 
-- `anyjson.lintOnChange`: lint after edits, default `true`.
-- `anyjson.lintOnSave`: lint on save, default `true`.
+- `anyajson.lintOnChange`: lint after edits, default `true`.
+- `anyajson.lintOnSave`: lint on save, default `true`.
 
 AnyaJSON accepts strict JSON syntax. Comments and trailing commas are not valid JSON.

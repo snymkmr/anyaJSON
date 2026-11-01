@@ -19,9 +19,9 @@
   ],
   "activationEvents": [
     "onLanguage:json",
-    "onCommand:anyjson.formatJson",
-    "onCommand:anyjson.minifyJson",
-    "onCommand:anyjson.lintJson"
+    "onCommand:anyajson.formatJson",
+    "onCommand:anyajson.minifyJson",
+    "onCommand:anyajson.lintJson"
   ],
   "main": "./extension.js",
   "scripts": {
@@ -30,49 +30,49 @@
   "contributes": {
     "commands": [
       {
-        "command": "anyjson.formatJson",
+        "command": "anyajson.formatJson",
         "title": "AnyaJSON: Format JSON Document"
       },
       {
-        "command": "anyjson.minifyJson",
+        "command": "anyajson.minifyJson",
         "title": "AnyaJSON: Minify JSON Document"
       },
       {
-        "command": "anyjson.lintJson",
+        "command": "anyajson.lintJson",
         "title": "AnyaJSON: Lint JSON Document"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "anyjson.formatJson",
+          "command": "anyajson.formatJson",
           "when": "editorLangId == json || resourceExtname == .json",
           "group": "1_modification@1"
         },
         {
-          "command": "anyjson.minifyJson",
+          "command": "anyajson.minifyJson",
           "when": "editorLangId == json || resourceExtname == .json",
           "group": "1_modification@2"
         },
         {
-          "command": "anyjson.lintJson",
+          "command": "anyajson.lintJson",
           "when": "editorLangId == json || resourceExtname == .json",
           "group": "1_modification@3"
         }
       ],
       "explorer/context": [
         {
-          "command": "anyjson.formatJson",
+          "command": "anyajson.formatJson",
           "when": "resourceExtname == .json",
           "group": "2_workspace@1"
         },
         {
-          "command": "anyjson.minifyJson",
+          "command": "anyajson.minifyJson",
           "when": "resourceExtname == .json",
           "group": "2_workspace@2"
         },
         {
-          "command": "anyjson.lintJson",
+          "command": "anyajson.lintJson",
           "when": "resourceExtname == .json",
           "group": "2_workspace@3"
         }
@@ -81,12 +81,12 @@
     "configuration": {
       "title": "AnyaJSON",
       "properties": {
-        "anyjson.lintOnChange": {
+        "anyajson.lintOnChange": {
           "type": "boolean",
           "default": true,
           "description": "Lint JSON after edits. Linting is debounced; disable this for very large documents if it slows editing."
         },
-        "anyjson.lintOnSave": {
+        "anyajson.lintOnSave": {
           "type": "boolean",
           "default": true,
           "description": "Lint JSON when a document is saved."
