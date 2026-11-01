@@ -758,7 +758,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
   <title>${escapeHtml(fileName)} JSON preview</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 0 18px 18px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
+    body { display: flex; flex-direction: column; height: 100vh; margin: 0; overflow: hidden; padding: 0 18px 12px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
     .title-bar { display: flex; align-items: center; gap: 12px; }
     .title-bar h1 { margin: 18px 0 12px; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
     .title-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: 0 0 auto; }
@@ -773,8 +773,11 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     .title-actions .excel-export-button:hover { background: #185c37; }
     .title-actions .icon-button[data-exact-match="true"] { background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground)); border-color: var(--vscode-focusBorder); }
     .excel-mark { display: inline-grid; place-items: center; width: 17px; height: 17px; border: 1px solid rgba(255,255,255,.8); border-radius: 2px; font-size: 11px; line-height: 1; font-weight: 700; }
-    .toolbar, .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-    .page-size-control { justify-content: flex-end; }
+    .toolbar, .controls { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+    .page-size-control { justify-content: flex-end; margin: 4px 0 0; }
+    .table-pagination { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 8px; }
+    .page-info { flex: 0 0 auto; margin: 0; color: var(--vscode-descriptionForeground); font-size: 12px; text-align: right; }
+    .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin: 0; }
     input, select, button { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 2px; padding: 5px 8px; font: inherit; }
     input { width: min(360px, 100%); }
     input:focus, select:focus, button:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -785,14 +788,13 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     .description, .meta { margin: 0 0 10px; color: var(--vscode-descriptionForeground); }
     .meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
     #source-path { overflow-wrap: anywhere; }
-    .table-scroll { max-width: 100%; max-height: calc(100vh - 150px); overflow: auto; border: 1px solid var(--vscode-panel-border); }
+    .table-scroll { flex: 1 1 auto; min-height: 0; max-width: 100%; overflow: auto; border: 1px solid var(--vscode-panel-border); }
     table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }
     th, td { min-width: 150px; max-width: 420px; padding: 7px 9px; text-align: left; vertical-align: top; border-right: 1px solid var(--vscode-panel-border); border-bottom: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; white-space: pre-wrap; }
     th { position: sticky; top: 0; z-index: 1; background: var(--vscode-editorStickyScroll-background, var(--vscode-sideBar-background)); }
     th.row-number, td.row-number { min-width: 54px; width: 54px; text-align: right; color: var(--vscode-descriptionForeground); }
     tbody tr:hover { background: var(--vscode-list-hoverBackground); }
     #status { color: var(--vscode-descriptionForeground); padding: 12px; }
-    .pagination { justify-content: flex-end; gap: 6px; }
     .pagination button { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 5px; color: var(--vscode-icon-foreground, var(--vscode-foreground)); background: transparent; border: 1px solid transparent; border-radius: 4px; }
     .pagination button:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
     .pagination button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -813,15 +815,18 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     <span id="result-count" aria-live="polite"></span>
   </div>
   ${columnNote}
-  <div class="meta"><span id="source-path">Path: ${escapeHtml(preview.sourcePath || '$')}</span><span id="page-info">Loading JSON data…</span></div>
+  <div class="meta"><span id="source-path">Path: ${escapeHtml(preview.sourcePath || '$')}</span></div>
+  <div class="table-pagination">
+    <div id="page-info" class="page-info" aria-live="polite">Loading JSON data…</div>
+    <div class="pagination" aria-label="Table pagination">
+      <button id="previous" type="button" title="Previous page" aria-label="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 18l-6-6 6-6"/></svg></button>
+      <button id="next" type="button" title="Next page" aria-label="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 18l6-6-6-6"/></svg></button>
+    </div>
+  </div>
   <div class="table-scroll"><table><thead id="table-head"></thead><tbody id="table-body"></tbody></table><div id="status">Loading JSON data…</div></div>
   <div class="controls page-size-control">
     <label for="page-size">Rows per page</label>
     <select id="page-size" aria-label="Rows per page">${JSON_PREVIEW_PAGE_SIZES.map(size => `<option value="${size}"${size === JSON_PREVIEW_PAGE_SIZE ? ' selected' : ''}>${size}</option>`).join('')}</select>
-  </div>
-  <div class="controls pagination" aria-label="Table pagination">
-    <button id="previous" type="button" title="Previous page" aria-label="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 18l-6-6 6-6"/></svg></button>
-    <button id="next" type="button" title="Next page" aria-label="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 18l6-6-6-6"/></svg></button>
   </div>
   <script nonce="${nonce}">
     (() => {
@@ -916,7 +921,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
         page = result.page;
         pageInfo.textContent = result.totalRows === 0
           ? '0 rows'
-          : 'Page ' + (page + 1).toLocaleString() + ' of ' + pages.toLocaleString();
+          : 'Page ' + (page + 1).toLocaleString() + ' of ' + pages.toLocaleString() + ' · ' + result.totalRows.toLocaleString() + ' rows';
         resultCount.textContent = result.totalRows.toLocaleString() + ' matching / ' + result.sourceTotalRows.toLocaleString() + ' rows';
         sourcePath.textContent = 'Path: ' + result.sourcePath;
         status.textContent = result.totalRows === 0 ? 'No matching rows.' : '';
@@ -947,7 +952,7 @@ function activate(context) {
   const previewWindowModes = new Map();
   const previewModels = new Map();
   const previewTimers = new Map();
-  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   statusBar.name = 'AnyaJSON JSON Lint';
 
   const refreshJsonPreview = (document) => {
@@ -1072,43 +1077,41 @@ function activate(context) {
     statusBar.show();
     statusBar.command = {
       command: 'anyajson.lintJson',
-      title: 'Lint JSON',
+      title: 'Refresh JSON lint',
       arguments: [document.uri]
     };
 
     if (pendingValidations.has(key)) {
-      statusBar.text = '$(sync~spin) JSON: Linting';
+      statusBar.text = '$(sync~spin) JSON';
       statusBar.color = undefined;
       statusBar.tooltip = 'Checking JSON syntax…';
       return;
     }
 
     const state = validationStates.get(key);
+    statusBar.text = '$(circle-filled) JSON';
     if (!state) {
-      statusBar.text = '$(question) JSON: Not linted';
-      statusBar.color = undefined;
-      statusBar.tooltip = 'Click to lint this JSON document.';
+      statusBar.color = new vscode.ThemeColor('testing.iconFailed');
+      statusBar.tooltip = 'JSON has not been linted. Click to refresh lint.';
       return;
     }
     if (state.version !== document.version) {
-      statusBar.text = '$(warning) JSON: Needs lint';
-      statusBar.color = undefined;
-      statusBar.tooltip = 'This document has changed since its last lint. Click to check it.';
+      statusBar.color = new vscode.ThemeColor('testing.iconFailed');
+      statusBar.tooltip = 'JSON changed since the last lint. Click to refresh lint.';
       return;
     }
     if (!state.error) {
-      statusBar.text = '$(check) JSON: Valid';
       statusBar.color = new vscode.ThemeColor('testing.iconPassed');
-      statusBar.tooltip = 'JSON syntax is valid. Click to lint again.';
+      statusBar.tooltip = 'No JSON syntax errors. Click to refresh lint.';
       return;
     }
 
     const position = document.positionAt(state.error.offset);
     const line = position.line + 1;
     const column = position.character + 1;
-    statusBar.text = `$(error) JSON: syntax error at ${line}:${column}`;
+    statusBar.text = `$(circle-filled) JSON: ${formatStatusBarIssue(`Line ${line}, column ${column}: ${state.error.message}`)}`;
     statusBar.color = new vscode.ThemeColor('testing.iconFailed');
-    statusBar.tooltip = `Line ${line}, column ${column}: ${state.error.message}\nClick to lint again.`;
+    statusBar.tooltip = `Line ${line}, column ${column}: ${state.error.message}\nClick to refresh lint.`;
   };
 
   const lintNow = (document) => {
@@ -1209,9 +1212,7 @@ function activate(context) {
       }
 
       const error = lintNow(document);
-      if (!error) {
-        void vscode.window.showInformationMessage('JSON syntax is valid.');
-      } else {
+      if (error) {
         void vscode.window.showWarningMessage(
           `JSON syntax error at line ${error.line}, column ${error.column}: ${error.message}. See the Problems panel for details.`
         );
@@ -1321,6 +1322,11 @@ function isJsonDocument(document) {
     document.languageId === 'json' ||
     (document.uri.scheme === 'file' && path.extname(document.uri.fsPath).toLowerCase() === '.json')
   ));
+}
+
+function formatStatusBarIssue(message) {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  return normalized.length > 80 ? `${normalized.slice(0, 79)}…` : normalized;
 }
 
 function fullDocumentRange(document) {
