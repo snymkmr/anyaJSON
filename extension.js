@@ -389,15 +389,18 @@ function buildJsonTablePreview(text) {
   return { sourcePath: '$', columns: columns.slice(0, JSON_PREVIEW_MAX_COLUMNS), sourceColumnCount: columns.length, rows, totalRows: rows.length };
 }
 
-function getFilteredJsonTableRows(preview, filterValue = '') {
+function getFilteredJsonTableRows(preview, filterValue = '', exactMatch = false) {
   const filter = typeof filterValue === 'string' ? filterValue.trim().toLocaleLowerCase() : '';
   return filter
-    ? preview.rows.filter(row => preview.columns.some(column => (row[column] ?? '').toLocaleLowerCase().includes(filter)))
+    ? preview.rows.filter(row => preview.columns.some(column => {
+      const value = (row[column] ?? '').toLocaleLowerCase();
+      return exactMatch ? value === filter : value.includes(filter);
+    }))
     : preview.rows;
 }
 
 function queryJsonTable(preview, request = {}) {
-  const filteredRows = getFilteredJsonTableRows(preview, request.filter);
+  const filteredRows = getFilteredJsonTableRows(preview, request.filter, request.exactMatch === true);
   const pageSize = JSON_PREVIEW_PAGE_SIZES.includes(request.pageSize) ? request.pageSize : JSON_PREVIEW_PAGE_SIZE;
   const pageCount = Math.ceil(filteredRows.length / pageSize);
   const requestedPage = Number.isInteger(request.page) ? request.page : 0;
@@ -635,8 +638,8 @@ async function writeExcelArchive(target, workbook) {
   }
 }
 
-async function exportJsonPreviewForExcel(preview, sourceUri, filterValue) {
-  const rows = getFilteredJsonTableRows(preview, filterValue).map(row =>
+async function exportJsonPreviewForExcel(preview, sourceUri, filterValue, exactMatch) {
+  const rows = getFilteredJsonTableRows(preview, filterValue, exactMatch).map(row =>
     preview.columns.map(column => row[column] ?? '')
   );
   const sourcePath = sourceUri.scheme === 'file' ? sourceUri.fsPath : '';
@@ -671,7 +674,73 @@ function escapeHtml(value) {
 function renderJsonPreviewError(webview, fileName, message) {
   const nonce = crypto.randomBytes(16).toString('base64');
   const contentSecurityPolicy = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy}"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(fileName)} JSON preview</title><style>*{box-sizing:border-box}body{color:var(--vscode-foreground);background:var(--vscode-editor-background);font-family:var(--vscode-font-family);padding:16px}.title-bar{display:flex;align-items:center;gap:12px}.title-bar h1{font-size:18px;margin:0}.title-actions{display:flex;gap:4px;margin-left:auto}.icon-button{display:inline-grid;place-items:center;width:30px;height:30px;padding:5px;color:var(--vscode-icon-foreground,var(--vscode-foreground));background:transparent;border:1px solid transparent;border-radius:4px;cursor:pointer}.icon-button:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}.icon-button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}p{color:var(--vscode-errorForeground);white-space:pre-wrap}</style></head><body><div class="title-bar"><h1>${escapeHtml(fileName)}</h1><div class="title-actions"><button id="refresh-preview" class="icon-button" type="button" title="Refresh preview" aria-label="Refresh preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-4L3 10"/><path d="M3 4v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4L21 14"/><path d="M21 20v-6h-6"/></svg></button><button id="pop-out" class="icon-button" type="button" title="Pop out preview" aria-label="Pop out preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg></button></div></div><p id="error-message">Could not preview this JSON file: ${escapeHtml(message)}</p><script nonce="${nonce}">(() => { const api = acquireVsCodeApi(); document.getElementById('refresh-preview').addEventListener('click', () => api.postMessage({ type: 'refresh' })); document.getElementById('pop-out').addEventListener('click', () => api.postMessage({ type: 'popout' })); window.addEventListener('message', event => { if (event.data?.type === 'refreshError') document.getElementById('error-message').textContent = 'Could not refresh JSON preview: ' + event.data.message; }); })();</script></body></html>`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(fileName)} JSON preview</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); padding: 16px; }
+    .title-bar { display: flex; align-items: center; gap: 12px; }
+    .title-bar h1 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
+    .title-actions { display: flex; gap: 4px; margin-left: auto; }
+    .icon-button { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 5px; color: var(--vscode-icon-foreground, var(--vscode-foreground)); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+    .icon-button:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+    .icon-button:disabled { opacity: .45; cursor: default; }
+    #window-action[data-window-mode="poppedOut"] .pop-in-icon { display: block; }
+    #window-action[data-window-mode="poppedOut"] .pop-out-icon { display: none; }
+    .pop-in-icon { display: none; }
+    .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    p { color: var(--vscode-errorForeground); white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div class="title-bar">
+    <h1>${escapeHtml(fileName)}</h1>
+    <div class="title-actions">
+      <button id="refresh-preview" class="icon-button" type="button" title="Refresh preview" aria-label="Refresh preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-4L3 10"/><path d="M3 4v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4L21 14"/><path d="M21 20v-6h-6"/></svg></button>
+      <button id="window-action" class="icon-button" data-window-mode="main" type="button" title="Pop out preview" aria-label="Pop out preview"><svg class="pop-out-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg><svg class="pop-in-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 12 12"/><path d="M12 6v6h6"/><path d="M15 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h7"/></svg></button>
+    </div>
+  </div>
+  <p id="error-message">Could not preview this JSON file: ${escapeHtml(message)}</p>
+  <script nonce="${nonce}">
+    (() => {
+      const api = acquireVsCodeApi();
+      const windowAction = document.getElementById('window-action');
+      let windowMode = api.getState()?.windowMode === 'poppedOut' ? 'poppedOut' : 'main';
+      const updateWindowMode = mode => {
+        windowMode = mode;
+        windowAction.dataset.windowMode = mode;
+        windowAction.title = mode === 'poppedOut' ? 'Pop in preview' : 'Pop out preview';
+        windowAction.setAttribute('aria-label', windowAction.title);
+        api.setState({ ...api.getState(), windowMode: mode });
+      };
+      updateWindowMode(windowMode);
+      document.getElementById('refresh-preview').addEventListener('click', () => api.postMessage({ type: 'refresh' }));
+      windowAction.addEventListener('click', () => {
+        const nextMode = windowMode === 'poppedOut' ? 'main' : 'poppedOut';
+        updateWindowMode(nextMode);
+        windowAction.disabled = true;
+        api.postMessage({ type: 'windowAction', mode: nextMode });
+      });
+      window.addEventListener('message', event => {
+        if (event.data?.type === 'windowMode') {
+          updateWindowMode(event.data.mode === 'poppedOut' ? 'poppedOut' : 'main');
+          windowAction.disabled = false;
+        } else if (event.data?.type === 'windowActionError') {
+          windowAction.disabled = false;
+        } else if (event.data?.type === 'refreshError') {
+          document.getElementById('error-message').textContent = 'Could not refresh JSON preview: ' + event.data.message;
+        }
+      });
+      api.postMessage({ type: 'ready', mode: windowMode });
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 function renderJsonPreviewHtml(webview, fileName, preview) {
@@ -689,18 +758,24 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
   <title>${escapeHtml(fileName)} JSON preview</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 16px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
-    .title-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-    .title-bar h1 { margin: 0; font-size: 1.15em; font-weight: 600; overflow-wrap: anywhere; }
+    body { margin: 0; padding: 0 18px 18px; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
+    .title-bar { display: flex; align-items: center; gap: 12px; }
+    .title-bar h1 { margin: 18px 0 12px; font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
     .title-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex: 0 0 auto; }
     .icon-button { display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 5px; color: var(--vscode-icon-foreground, var(--vscode-foreground)); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
     .icon-button:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+    .icon-button:disabled { opacity: .45; cursor: default; }
+    #window-action[data-window-mode="poppedOut"] .pop-in-icon { display: block; }
+    #window-action[data-window-mode="poppedOut"] .pop-out-icon { display: none; }
+    .pop-in-icon { display: none; }
     .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
     .title-actions .excel-export-button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 4px 9px; color: #fff; background: #217346; border: 1px solid #185c37; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
     .title-actions .excel-export-button:hover { background: #185c37; }
+    .title-actions .icon-button[data-exact-match="true"] { background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground)); border-color: var(--vscode-focusBorder); }
     .excel-mark { display: inline-grid; place-items: center; width: 17px; height: 17px; border: 1px solid rgba(255,255,255,.8); border-radius: 2px; font-size: 11px; line-height: 1; font-weight: 700; }
     .toolbar, .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-    input, select, button { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 3px; padding: 5px 8px; font: inherit; }
+    .page-size-control { justify-content: flex-end; }
+    input, select, button { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 2px; padding: 5px 8px; font: inherit; }
     input { width: min(360px, 100%); }
     input:focus, select:focus, button:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
     button { cursor: pointer; }
@@ -710,7 +785,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     .description, .meta { margin: 0 0 10px; color: var(--vscode-descriptionForeground); }
     .meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
     #source-path { overflow-wrap: anywhere; }
-    .table-scroll { max-width: 100%; max-height: calc(100vh - 155px); overflow: auto; border: 1px solid var(--vscode-panel-border); }
+    .table-scroll { max-width: 100%; max-height: calc(100vh - 150px); overflow: auto; border: 1px solid var(--vscode-panel-border); }
     table { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; }
     th, td { min-width: 150px; max-width: 420px; padding: 7px 9px; text-align: left; vertical-align: top; border-right: 1px solid var(--vscode-panel-border); border-bottom: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; white-space: pre-wrap; }
     th { position: sticky; top: 0; z-index: 1; background: var(--vscode-editorStickyScroll-background, var(--vscode-sideBar-background)); }
@@ -728,20 +803,22 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     <h1>${escapeHtml(fileName)}</h1>
     <div class="title-actions">
       <button id="export-excel" class="excel-export-button" type="button" title="Export all filtered rows as an Excel workbook (.xlsx)" aria-label="Export all filtered rows as an Excel workbook (.xlsx)"><span class="excel-mark" aria-hidden="true">X</span><span>Export</span></button>
+      <button id="exact-filter" class="icon-button" data-exact-match="false" type="button" aria-pressed="false" title="Exact filtering off" aria-label="Exact filtering off"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7z"/><path d="M16 17h6M16 20h6"/></svg></button>
       <button id="refresh-preview" class="icon-button" type="button" title="Refresh preview" aria-label="Refresh preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-4L3 10"/><path d="M3 4v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4L21 14"/><path d="M21 20v-6h-6"/></svg></button>
-      <button id="pop-out" class="icon-button" type="button" title="Pop out preview" aria-label="Pop out preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg></button>
+      <button id="window-action" class="icon-button" data-window-mode="main" type="button" title="Pop out preview" aria-label="Pop out preview"><svg class="pop-out-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg><svg class="pop-in-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 12 12"/><path d="M12 6v6h6"/><path d="M15 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h7"/></svg></button>
     </div>
   </div>
   <div class="toolbar">
     <input id="filter" type="search" placeholder="Filter rows…" aria-label="Filter rows">
-    <label for="page-size">Rows per page</label>
-    <select id="page-size" aria-label="Rows per page">${JSON_PREVIEW_PAGE_SIZES.map(size => `<option value="${size}"${size === JSON_PREVIEW_PAGE_SIZE ? ' selected' : ''}>${size}</option>`).join('')}</select>
     <span id="result-count" aria-live="polite"></span>
   </div>
-  <p class="description">${preview.totalRows.toLocaleString()} rows in this preview.</p>
   ${columnNote}
   <div class="meta"><span id="source-path">Path: ${escapeHtml(preview.sourcePath || '$')}</span><span id="page-info">Loading JSON data…</span></div>
   <div class="table-scroll"><table><thead id="table-head"></thead><tbody id="table-body"></tbody></table><div id="status">Loading JSON data…</div></div>
+  <div class="controls page-size-control">
+    <label for="page-size">Rows per page</label>
+    <select id="page-size" aria-label="Rows per page">${JSON_PREVIEW_PAGE_SIZES.map(size => `<option value="${size}"${size === JSON_PREVIEW_PAGE_SIZE ? ' selected' : ''}>${size}</option>`).join('')}</select>
+  </div>
   <div class="controls pagination" aria-label="Table pagination">
     <button id="previous" type="button" title="Previous page" aria-label="Previous page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 18l-6-6 6-6"/></svg></button>
     <button id="next" type="button" title="Next page" aria-label="Next page" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 18l6-6-6-6"/></svg></button>
@@ -759,18 +836,47 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
       const pageInfo = document.getElementById('page-info');
       const sourcePath = document.getElementById('source-path');
       const resultCount = document.getElementById('result-count');
-      const popOut = document.getElementById('pop-out');
+      const windowAction = document.getElementById('window-action');
+      let windowMode = api.getState()?.windowMode === 'poppedOut' ? 'poppedOut' : 'main';
+      const updateWindowMode = mode => {
+        windowMode = mode;
+        windowAction.dataset.windowMode = mode;
+        windowAction.title = mode === 'poppedOut' ? 'Pop in preview' : 'Pop out preview';
+        windowAction.setAttribute('aria-label', windowAction.title);
+        api.setState({ ...api.getState(), windowMode: mode });
+      };
+      updateWindowMode(windowMode);
       const exportExcel = document.getElementById('export-excel');
+      const exactFilter = document.getElementById('exact-filter');
       let page = 0;
       let requestId = 0;
       let filterTimer;
+      let exactMatch = false;
+      const updateExactFilter = () => {
+        const label = exactMatch ? 'Exact filtering on' : 'Exact filtering off';
+        exactFilter.dataset.exactMatch = String(exactMatch);
+        exactFilter.setAttribute('aria-pressed', String(exactMatch));
+        exactFilter.title = label;
+        exactFilter.setAttribute('aria-label', label);
+      };
       const request = () => {
         requestId += 1;
         status.textContent = 'Loading…';
-        api.postMessage({ type: 'query', filter: filter.value, page, pageSize: Number(pageSize.value), requestId });
+        api.postMessage({ type: 'query', filter: filter.value, exactMatch, page, pageSize: Number(pageSize.value), requestId });
       };
-      popOut.addEventListener('click', () => api.postMessage({ type: 'popout' }));
-      exportExcel.addEventListener('click', () => api.postMessage({ type: 'export', filter: filter.value }));
+      windowAction.addEventListener('click', () => {
+        const nextMode = windowMode === 'poppedOut' ? 'main' : 'poppedOut';
+        updateWindowMode(nextMode);
+        windowAction.disabled = true;
+        api.postMessage({ type: 'windowAction', mode: nextMode });
+      });
+      exportExcel.addEventListener('click', () => api.postMessage({ type: 'export', filter: filter.value, exactMatch }));
+      exactFilter.addEventListener('click', () => {
+        exactMatch = !exactMatch;
+        updateExactFilter();
+        page = 0;
+        request();
+      });
       document.getElementById('refresh-preview').addEventListener('click', () => api.postMessage({ type: 'refresh' }));
       const makeCell = (tagName, value, className) => {
         const cell = document.createElement(tagName);
@@ -780,6 +886,15 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
       };
       window.addEventListener('message', event => {
         const result = event.data;
+        if (result?.type === 'windowMode') {
+          updateWindowMode(result.mode === 'poppedOut' ? 'poppedOut' : 'main');
+          windowAction.disabled = false;
+          return;
+        }
+        if (result?.type === 'windowActionError') {
+          windowAction.disabled = false;
+          return;
+        }
         if (result?.type === 'refreshError') {
           status.textContent = 'Refresh failed: ' + result.message;
           return;
@@ -816,7 +931,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
       pageSize.addEventListener('change', () => { page = 0; request(); });
       previous.addEventListener('click', () => { if (page > 0) { page -= 1; request(); } });
       next.addEventListener('click', () => { page += 1; request(); });
-      api.postMessage({ type: 'ready' });
+      api.postMessage({ type: 'ready', mode: windowMode });
     })();
   </script>
 </body>
@@ -829,6 +944,7 @@ function activate(context) {
   const validationTimers = new Map();
   const pendingValidations = new Set();
   const previewPanels = new Map();
+  const previewWindowModes = new Map();
   const previewModels = new Map();
   const previewTimers = new Map();
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -883,10 +999,23 @@ function activate(context) {
         { enableScripts: true, localResourceRoots: [] }
       );
       previewPanels.set(uri, panel);
+      previewWindowModes.set(uri, 'main');
       const messageListener = panel.webview.onDidReceiveMessage(message => {
-        if (message?.type === 'popout') {
-          void vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow').then(undefined, error => {
-            void vscode.window.showErrorMessage(`Could not pop out the JSON preview: ${errorMessage(error)}`);
+        if (message?.type === 'windowAction') {
+          const currentMode = previewWindowModes.get(uri) || 'main';
+          const nextMode = message.mode === 'main' || message.mode === 'poppedOut'
+            ? message.mode
+            : currentMode === 'poppedOut' ? 'main' : 'poppedOut';
+          const isPoppedOut = nextMode === 'main';
+          const command = isPoppedOut
+            ? 'workbench.action.restoreEditorsToMainWindow'
+            : 'workbench.action.moveEditorToNewWindow';
+          previewWindowModes.set(uri, nextMode);
+          void panel.webview.postMessage({ type: 'windowMode', mode: nextMode });
+          void vscode.commands.executeCommand(command).then(undefined, error => {
+            previewWindowModes.set(uri, currentMode);
+            void vscode.window.showErrorMessage(`Could not ${isPoppedOut ? 'pop in' : 'pop out'} the JSON preview: ${errorMessage(error)}`);
+            void panel.webview.postMessage({ type: 'windowMode', mode: currentMode });
           });
           return;
         }
@@ -899,12 +1028,16 @@ function activate(context) {
         if (message?.type === 'export') {
           const current = previewModels.get(uri);
           if (current) {
-            void exportJsonPreviewForExcel(current, document.uri, message.filter)
+            void exportJsonPreviewForExcel(current, document.uri, message.filter, message.exactMatch === true)
               .catch(error => vscode.window.showErrorMessage(`Could not export Excel workbook: ${errorMessage(error)}`));
           }
           return;
         }
         if (message?.type === 'ready') {
+          if (message.mode === 'main' || message.mode === 'poppedOut') {
+            previewWindowModes.set(uri, message.mode);
+          }
+          void panel.webview.postMessage({ type: 'windowMode', mode: previewWindowModes.get(uri) || 'main' });
           const current = previewModels.get(uri);
           if (current) void panel.webview.postMessage(queryJsonTable(current, { page: 0, pageSize: JSON_PREVIEW_PAGE_SIZE, requestId: 0 }));
           return;
@@ -918,6 +1051,7 @@ function activate(context) {
         messageListener.dispose();
         previewPanels.delete(uri);
         previewModels.delete(uri);
+        previewWindowModes.delete(uri);
       });
       context.subscriptions.push({ dispose: () => { messageListener.dispose(); disposeListener.dispose(); } });
     }
@@ -1204,4 +1338,4 @@ function deactivate() {
   // VS Code disposes subscriptions registered during activation.
 }
 
-module.exports = { activate, deactivate, parseJson, transformJson };
+module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows };
