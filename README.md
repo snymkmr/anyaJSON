@@ -1,6 +1,6 @@
 # AnyaJSON
 
-AnyaJSON formats, minifies, and lints JSON documents in Visual Studio Code.
+AnyaJSON formats, minifies, lints, and previews JSON documents in Visual Studio Code.
 
 ## Commands
 
@@ -9,6 +9,7 @@ Run these from the Command Palette, the editor context menu, or the JSON file's 
 - **AnyaJSON: Format JSON Document** formats the document using the editor's indentation settings. It also powers **Format Document** for JSON.
 - **AnyaJSON: Minify JSON Document** removes whitespace between JSON tokens. Strings and number spellings are preserved.
 - **AnyaJSON: Lint JSON Document** checks JSON syntax and reports the first error in the Problems panel.
+- **AnyaJSON: Preview JSON as Table** opens an interactive side-by-side table. It detects the most useful array of objects, flattens nested object fields into columns, and supports row filtering, page-size selection, and pop-out. If the JSON has no record array, it previews the root object or value instead. The preview updates as you edit the source.
 
 AnyaJSON also lints open JSON documents after edits (debounced by 500 ms) and when they are saved. The status bar shows the current lint result; click it to lint again.
 
