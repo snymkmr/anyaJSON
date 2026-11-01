@@ -249,7 +249,7 @@ function activate(context) {
   const validationTimers = new Map();
   const pendingValidations = new Set();
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.name = 'AnyJSON JSON Lint';
+  statusBar.name = 'AnyaJSON JSON Lint';
 
   const updateStatusBar = () => {
     const document = vscode.window.activeTextEditor?.document;
@@ -473,7 +473,7 @@ function lintDocument(document, diagnostics, validationStates) {
       error.message,
       vscode.DiagnosticSeverity.Error
     );
-    diagnostic.source = 'AnyJSON';
+    diagnostic.source = 'AnyaJSON';
     diagnostic.code = 'syntax';
     diagnostics.set(document.uri, [diagnostic]);
     validationStates.set(key, { version: document.version, error: { offset: error.offset, message: error.message } });

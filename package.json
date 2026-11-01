@@ -1,12 +1,12 @@
 {
-  "name": "anyjson",
-  "displayName": "AnyJSON",
-  "description": "Format, minify, and lint JSON documents in Visual Studio Code.",
-  "version": "0.1.1",
-  "publisher": "SanyamKumar",
+  "name": "anyajson",
+  "displayName": "AnyaJSON",
+  "description": "Format, minify, and lint JSON in VS Code.",
+  "version": "0.1.2",
+  "publisher": "Sanyam",
   "repository": {
     "type": "git",
-    "url": "https://github.com/snymkmr/anyJSON.git"
+    "url": "https://github.com/snymkmr/anyaJSON.git"
   },
   "icon": "JSON-icon.png",
   "license": "MIT",
@@ -31,15 +31,15 @@
     "commands": [
       {
         "command": "anyjson.formatJson",
-        "title": "AnyJSON: Format JSON Document"
+        "title": "AnyaJSON: Format JSON Document"
       },
       {
         "command": "anyjson.minifyJson",
-        "title": "AnyJSON: Minify JSON Document"
+        "title": "AnyaJSON: Minify JSON Document"
       },
       {
         "command": "anyjson.lintJson",
-        "title": "AnyJSON: Lint JSON Document"
+        "title": "AnyaJSON: Lint JSON Document"
       }
     ],
     "menus": {
@@ -79,7 +79,7 @@
       ]
     },
     "configuration": {
-      "title": "AnyJSON",
+      "title": "AnyaJSON",
       "properties": {
         "anyjson.lintOnChange": {
           "type": "boolean",
