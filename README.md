@@ -11,7 +11,11 @@ Run these from the Command Palette, the editor context menu, or the JSON file's 
 - **AnyaJSON: Lint JSON Document** checks JSON syntax and reports the first error in the Problems panel.
 - **AnyaJSON: Preview JSON as Table** opens an interactive side-by-side table. It detects the most useful array of objects, flattens nested object fields into columns, and supports row filtering, page-size selection, and pop-out. If the JSON has no record array, it previews the root object or value instead. Use the exact-filter icon beside **Export** to switch between substring and exact-value matching. Use the green **Export** button to save all rows matching the current filter as a real Excel workbook (`.xlsx`); it exports the full filtered result, not only the visible page. Values are stored as text so Excel keeps identifiers, dates, and formula-like strings as shown. The export contains the flattened preview table; the JSON source is unchanged. The preview updates as you edit the source.
 
+  For files larger than 50 MB, AnyaJSON streams a root array or arrays nested inside root objects from disk, so those files do not need to be opened as editor documents. Large-file previews load at most 10,000 rows. Filtering applies to the loaded rows, and Excel export is disabled when the preview is partial. Save the file before refreshing to include recent edits.
+
 AnyaJSON also lints open JSON documents after edits (debounced by 500 ms) and when they are saved. The status bar shows the current lint result; click it to lint again.
+
+For files larger than 50 MB, right-click the saved JSON file in Explorer and run **AnyaJSON: Lint JSON Document**. AnyaJSON validates it directly from disk and reports the first syntax error in a message; these files are not opened in the editor, so they do not receive Problems-panel diagnostics.
 
 ## Settings
 

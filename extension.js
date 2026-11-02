@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const fs = require('node:fs');
+const { StringDecoder } = require('node:string_decoder');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { createDeflateRaw } = require('node:zlib');
@@ -251,7 +252,555 @@ function transformJson(text, minify, options = {}) {
 const JSON_PREVIEW_PAGE_SIZE = 50;
 const JSON_PREVIEW_PAGE_SIZES = [25, 50, 100, 200];
 const JSON_PREVIEW_MAX_COLUMNS = 200;
+const JSON_LARGE_FILE_THRESHOLD = 50_000_000;
+const JSON_LARGE_PREVIEW_MAX_ROWS = 10000;
 const JSON_NUMBER = Symbol('jsonNumber');
+
+class JsonFileReader {
+  constructor(stream, onProgress, totalBytes) {
+    this.iterator = stream[Symbol.asyncIterator]();
+    this.decoder = new StringDecoder('utf8');
+    this.buffer = '';
+    this.index = 0;
+    this.finished = false;
+    this.onProgress = onProgress;
+    this.totalBytes = totalBytes;
+    this.bytesRead = 0;
+    this.offset = 0;
+    this.line = 1;
+    this.column = 1;
+    this.lastWasCarriageReturn = false;
+  }
+
+  peek() {
+    return this.buffer[this.index];
+  }
+
+  consume() {
+    const character = this.buffer[this.index];
+    this.index += 1;
+    this.offset += 1;
+    if (character === '\r') {
+      this.line += 1;
+      this.column = 1;
+      this.lastWasCarriageReturn = true;
+    } else if (character === '\n') {
+      if (!this.lastWasCarriageReturn) this.line += 1;
+      this.column = 1;
+      this.lastWasCarriageReturn = false;
+    } else {
+      this.column += 1;
+      this.lastWasCarriageReturn = false;
+    }
+  }
+
+  consumeRange(length) {
+    if (length <= 0) return;
+    const text = this.buffer.slice(this.index, this.index + length);
+    this.index += length;
+    this.offset += length;
+
+    const carriageReturn = text.indexOf('\r');
+    const lineFeed = text.indexOf('\n');
+    if (carriageReturn < 0 && lineFeed < 0) {
+      this.column += length;
+      this.lastWasCarriageReturn = text.endsWith('\r');
+      return;
+    }
+
+    let cursor = 0;
+    let lineBreakCount = 0;
+    let lastLineBreakEnd = 0;
+    while (cursor < text.length) {
+      const nextCarriageReturn = text.indexOf('\r', cursor);
+      const nextLineFeed = text.indexOf('\n', cursor);
+      if (nextCarriageReturn >= 0 && (nextLineFeed < 0 || nextCarriageReturn < nextLineFeed)) {
+        lineBreakCount += 1;
+        if (text[nextCarriageReturn + 1] === '\n') {
+          cursor = nextCarriageReturn + 2;
+          lastLineBreakEnd = cursor;
+        } else {
+          cursor = nextCarriageReturn + 1;
+          lastLineBreakEnd = cursor;
+        }
+      } else if (nextLineFeed >= 0) {
+        if (!(nextLineFeed === 0 && this.lastWasCarriageReturn)) lineBreakCount += 1;
+        cursor = nextLineFeed + 1;
+        lastLineBreakEnd = cursor;
+      } else {
+        break;
+      }
+    }
+    this.line += lineBreakCount;
+    this.column = text.length - lastLineBreakEnd + 1;
+    this.lastWasCarriageReturn = text.endsWith('\r');
+  }
+
+  async fill() {
+    if (this.index < this.buffer.length) return true;
+    if (this.finished) return false;
+    const next = await this.iterator.next();
+    this.index = 0;
+    if (next.done) {
+      this.buffer = this.decoder.end();
+      this.finished = true;
+    } else {
+      this.bytesRead += next.value.length;
+      if (this.onProgress) this.onProgress(this.bytesRead, this.totalBytes);
+      this.buffer = this.decoder.write(next.value);
+    }
+    if (this.buffer.length > 0) return true;
+    return this.finished ? false : this.fill();
+  }
+}
+
+async function nextJsonCharacter(reader) {
+  while (reader.peek() === undefined) {
+    if (!await reader.fill()) return undefined;
+  }
+  const character = reader.peek();
+  reader.consume();
+  return character;
+}
+
+async function peekJsonCharacter(reader) {
+  while (reader.peek() === undefined) {
+    if (!await reader.fill()) return undefined;
+  }
+  return reader.peek();
+}
+
+async function skipJsonWhitespace(reader, allowBom = false) {
+  while (true) {
+    if (reader.index >= reader.buffer.length && !await reader.fill()) return;
+    const start = reader.index;
+    let end = start;
+    while (end < reader.buffer.length) {
+      const code = reader.buffer.charCodeAt(end);
+      if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+        end += 1;
+      } else if (allowBom && reader.offset + end - start === 0 && code === 0xfeff) {
+        allowBom = false;
+        end += 1;
+      } else {
+        break;
+      }
+    }
+    if (end > start) reader.consumeRange(end - start);
+    if (reader.index < reader.buffer.length) return;
+  }
+}
+
+function failLargeJsonValidation(reader, message) {
+  throw new JsonSyntaxError(reader.offset, message);
+}
+
+async function readLargeJsonString(reader) {
+  while (true) {
+    if (reader.index >= reader.buffer.length && !await reader.fill()) {
+      failLargeJsonValidation(reader, 'Unterminated string.');
+    }
+    let scanIndex = reader.index;
+    while (scanIndex < reader.buffer.length) {
+      const code = reader.buffer.charCodeAt(scanIndex);
+      if (code === 0x22 || code === 0x5c || code < 0x20) break;
+      scanIndex += 1;
+    }
+    if (scanIndex > reader.index) reader.consumeRange(scanIndex - reader.index);
+    if (reader.index >= reader.buffer.length) continue;
+
+    const character = reader.peek();
+    if (character === '"') {
+      reader.consume();
+      return;
+    }
+    if (character.charCodeAt(0) < 0x20) failLargeJsonValidation(reader, 'Unescaped control character in string.');
+    reader.consume();
+    if (character !== '\\') continue;
+
+    const escape = await peekJsonCharacter(reader);
+    if (escape === undefined) failLargeJsonValidation(reader, 'Incomplete escape sequence.');
+    if ('"\\/bfnrt'.includes(escape)) {
+      reader.consume();
+      continue;
+    }
+    if (escape !== 'u') failLargeJsonValidation(reader, 'Invalid escape sequence.');
+    reader.consume();
+    for (let digit = 0; digit < 4; digit += 1) {
+      const hexadecimal = await peekJsonCharacter(reader);
+      if (hexadecimal === undefined) failLargeJsonValidation(reader, 'Incomplete Unicode escape sequence.');
+      if (!/[0-9a-f]/i.test(hexadecimal)) failLargeJsonValidation(reader, 'Invalid Unicode escape sequence.');
+      reader.consume();
+    }
+  }
+}
+
+async function consumeLargeJsonDigits(reader) {
+  while (true) {
+    if (reader.index >= reader.buffer.length && !await reader.fill()) return;
+    const start = reader.index;
+    while (reader.index < reader.buffer.length) {
+      const code = reader.buffer.charCodeAt(reader.index);
+      if (code < 0x30 || code > 0x39) break;
+      reader.index += 1;
+    }
+    const digitCount = reader.index - start;
+    reader.index = start;
+    if (digitCount > 0) reader.consumeRange(digitCount);
+    if (reader.index < reader.buffer.length) return;
+  }
+}
+
+async function readLargeJsonNumber(reader, firstCharacter) {
+  let character = firstCharacter;
+  if (character === '-') {
+    character = await peekJsonCharacter(reader);
+    if (character === undefined || !/[0-9]/.test(character)) {
+      failLargeJsonValidation(reader, 'Expected a digit after the minus sign.');
+    }
+    reader.consume();
+  }
+
+  if (character === '0') {
+    // A following digit is left for the parent parser to report as unexpected content.
+  } else if (/[1-9]/.test(character)) {
+    await consumeLargeJsonDigits(reader);
+  } else {
+    failLargeJsonValidation(reader, 'Expected a digit in the number.');
+  }
+
+  if (await peekJsonCharacter(reader) === '.') {
+    reader.consume();
+    if (!/[0-9]/.test((await peekJsonCharacter(reader)) || '')) {
+      failLargeJsonValidation(reader, 'Expected a digit after the decimal point.');
+    }
+    await consumeLargeJsonDigits(reader);
+  }
+  const exponent = await peekJsonCharacter(reader);
+  if (exponent === 'e' || exponent === 'E') {
+    reader.consume();
+    const sign = await peekJsonCharacter(reader);
+    if (sign === '+' || sign === '-') reader.consume();
+    if (!/[0-9]/.test((await peekJsonCharacter(reader)) || '')) {
+      failLargeJsonValidation(reader, 'Expected a digit in the exponent.');
+    }
+    await consumeLargeJsonDigits(reader);
+  }
+}
+
+async function readLargeJsonLiteral(reader, literal) {
+  for (let index = 1; index < literal.length; index += 1) {
+    if (await peekJsonCharacter(reader) !== literal[index]) {
+      failLargeJsonValidation(reader, `Expected '${literal}'.`);
+    }
+    reader.consume();
+  }
+}
+
+async function parseLargeJsonValue(reader) {
+  await skipJsonWhitespace(reader);
+  const firstCharacter = await peekJsonCharacter(reader);
+  if (firstCharacter === undefined) failLargeJsonValidation(reader, 'Expected a JSON value.');
+  if (!(firstCharacter === '"' || firstCharacter === '{' || firstCharacter === '['
+    || firstCharacter === '-' || /[0-9]/.test(firstCharacter)
+    || firstCharacter === 't' || firstCharacter === 'f' || firstCharacter === 'n')) {
+    failLargeJsonValidation(reader, 'Expected a JSON value.');
+  }
+  reader.consume();
+
+  if (firstCharacter === '"') return readLargeJsonString(reader);
+  if (firstCharacter === '-') return readLargeJsonNumber(reader, firstCharacter);
+  if (/[0-9]/.test(firstCharacter)) return readLargeJsonNumber(reader, firstCharacter);
+  if (firstCharacter === 't') return readLargeJsonLiteral(reader, 'true');
+  if (firstCharacter === 'f') return readLargeJsonLiteral(reader, 'false');
+  if (firstCharacter === 'n') return readLargeJsonLiteral(reader, 'null');
+
+  if (firstCharacter === '{') {
+    await skipJsonWhitespace(reader);
+    if (await peekJsonCharacter(reader) === '}') {
+      reader.consume();
+      return;
+    }
+    while (true) {
+      if (await peekJsonCharacter(reader) !== '"') {
+        failLargeJsonValidation(reader, "Expected a quoted property name or '}'.");
+      }
+      reader.consume();
+      await readLargeJsonString(reader);
+      await skipJsonWhitespace(reader);
+      if (await peekJsonCharacter(reader) !== ':') failLargeJsonValidation(reader, "Expected ':' after the property name.");
+      reader.consume();
+      await skipJsonWhitespace(reader);
+      await parseLargeJsonValue(reader);
+      await skipJsonWhitespace(reader);
+      const separator = await peekJsonCharacter(reader);
+      if (separator === '}') {
+        reader.consume();
+        return;
+      }
+      if (separator !== ',') failLargeJsonValidation(reader, "Expected ',' or '}' after the property value.");
+      reader.consume();
+      await skipJsonWhitespace(reader);
+      if (await peekJsonCharacter(reader) === '}') failLargeJsonValidation(reader, 'Trailing commas are not allowed in JSON.');
+    }
+  }
+
+  if (firstCharacter === '[') {
+    await skipJsonWhitespace(reader);
+    if (await peekJsonCharacter(reader) === ']') {
+      reader.consume();
+      return;
+    }
+    while (true) {
+      await parseLargeJsonValue(reader);
+      await skipJsonWhitespace(reader);
+      const separator = await peekJsonCharacter(reader);
+      if (separator === ']') {
+        reader.consume();
+        return;
+      }
+      if (separator !== ',') failLargeJsonValidation(reader, "Expected ',' or ']' after the array item.");
+      reader.consume();
+      await skipJsonWhitespace(reader);
+      if (await peekJsonCharacter(reader) === ']') failLargeJsonValidation(reader, 'Trailing commas are not allowed in JSON.');
+    }
+  }
+
+  failLargeJsonValidation(reader, 'Expected a JSON value.');
+}
+
+async function validateLargeJsonFile(uri, onProgress) {
+  const stat = await fs.promises.stat(uri.fsPath);
+  const reader = new JsonFileReader(fs.createReadStream(uri.fsPath), onProgress, stat.size);
+  try {
+    await skipJsonWhitespace(reader, true);
+    await parseLargeJsonValue(reader);
+    await skipJsonWhitespace(reader);
+    if (await peekJsonCharacter(reader) !== undefined) {
+      failLargeJsonValidation(reader, 'Unexpected content after the JSON value.');
+    }
+    return { isValid: true };
+  } catch (error) {
+    if (!(error instanceof JsonSyntaxError)) throw error;
+    return {
+      isValid: false,
+      offset: error.offset,
+      line: reader.line,
+      column: reader.column,
+      message: error.message
+    };
+  }
+}
+
+async function scanJsonValue(reader, firstCharacter, capture, stopAfterString = false) {
+  const parts = [];
+  let segmentStart = reader.index - 1;
+  let inString = firstCharacter === '"';
+  let escaped = false;
+  let curlyDepth = firstCharacter === '{' ? 1 : 0;
+  let squareDepth = firstCharacter === '[' ? 1 : 0;
+  let sawContainer = curlyDepth > 0 || squareDepth > 0;
+
+  while (true) {
+    const character = reader.peek();
+    if (character === undefined) {
+      if (capture) parts.push(reader.buffer.slice(segmentStart, reader.index));
+      if (!await reader.fill()) break;
+      segmentStart = reader.index;
+      continue;
+    }
+
+    if (!inString && !sawContainer && (character === ',' || character === ']' || character === '}')) break;
+
+    reader.consume();
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') {
+        inString = false;
+        if (stopAfterString) break;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+    } else if (character === '{') {
+      curlyDepth += 1;
+      sawContainer = true;
+    } else if (character === '}') {
+      curlyDepth -= 1;
+      if (curlyDepth < 0) throw new Error('Unexpected closing brace in JSON.');
+    } else if (character === '[') {
+      squareDepth += 1;
+      sawContainer = true;
+    } else if (character === ']') {
+      squareDepth -= 1;
+      if (squareDepth < 0) throw new Error('Unexpected closing bracket in JSON.');
+    }
+
+    if (sawContainer && curlyDepth === 0 && squareDepth === 0) break;
+  }
+
+  if (inString || curlyDepth !== 0 || squareDepth !== 0) throw new Error('Unexpected end of JSON file.');
+  if (capture) parts.push(reader.buffer.slice(segmentStart, reader.index));
+  return capture ? parts.join('') : undefined;
+}
+
+function createLargeJsonArrayCandidate(sourcePath) {
+  return {
+    sourcePath,
+    rows: [],
+    columns: new Set(),
+    rowCount: 0,
+    onlyObjects: true,
+    onlyScalars: true
+  };
+}
+
+async function readLargeJsonArray(reader, sourcePath) {
+  const candidate = createLargeJsonArrayCandidate(sourcePath);
+  let afterComma = false;
+  while (true) {
+    await skipJsonWhitespace(reader);
+    const character = await peekJsonCharacter(reader);
+    if (character === undefined) throw new Error('Unexpected end of JSON array.');
+    if (character === ']') {
+      if (afterComma) throw new Error('Trailing commas are not allowed in JSON.');
+      reader.consume();
+      return candidate;
+    }
+    if (character === ',') throw new Error('Expected a JSON value in the array.');
+
+    reader.consume();
+    const raw = (await scanJsonValue(reader, character, true)).trim();
+    let node;
+    try {
+      node = parseJson(raw).root;
+    } catch (error) {
+      throw new Error(`Invalid JSON at row ${candidate.rowCount + 1}: ${error.message}`);
+    }
+    const value = materializeJsonNode(node);
+    const row = isRecord(value) ? flattenJsonRecord(value) : { Value: formatPreviewValue(value) };
+    if (Object.keys(row).length === 0) row.Value = '{}';
+    candidate.rowCount += 1;
+    candidate.onlyObjects &&= node.type === 'object';
+    candidate.onlyScalars &&= node.type === 'scalar';
+    for (const column of Object.keys(row)) candidate.columns.add(column);
+    if (candidate.rows.length < JSON_LARGE_PREVIEW_MAX_ROWS) candidate.rows.push(row);
+
+    await skipJsonWhitespace(reader);
+    const separator = await nextJsonCharacter(reader);
+    if (separator === ']') return candidate;
+    if (separator !== ',') throw new Error("Expected ',' or ']' after an array item.");
+    afterComma = true;
+    await skipJsonWhitespace(reader);
+    if (await peekJsonCharacter(reader) === ']') throw new Error('Trailing commas are not allowed in JSON.');
+    afterComma = false;
+  }
+}
+
+async function readLargeJsonObject(reader, sourcePath, candidates) {
+  await skipJsonWhitespace(reader);
+  let afterComma = false;
+  while (await peekJsonCharacter(reader) !== '}') {
+    const keyStart = await nextJsonCharacter(reader);
+    if (keyStart !== '"') throw new Error('Expected a quoted property name in a JSON object.');
+    const keyRaw = await scanJsonValue(reader, keyStart, true, true);
+    let key;
+    try {
+      key = JSON.parse(keyRaw);
+    } catch {
+      throw new Error('Invalid property name in a JSON object.');
+    }
+    await skipJsonWhitespace(reader);
+    if (await nextJsonCharacter(reader) !== ':') throw new Error("Expected ':' after a property name.");
+    await skipJsonWhitespace(reader);
+    const valueStart = await nextJsonCharacter(reader);
+    if (valueStart === undefined) throw new Error('Unexpected end of JSON object.');
+    const valuePath = sourcePath ? `${sourcePath}.${key}` : key;
+    if (valueStart === '[') candidates.push(await readLargeJsonArray(reader, valuePath));
+    else if (valueStart === '{') await readLargeJsonObject(reader, valuePath, candidates);
+    else await skipLargeJsonValue(reader, valueStart);
+
+    await skipJsonWhitespace(reader);
+    const separator = await nextJsonCharacter(reader);
+    if (separator === '}') return;
+    if (separator !== ',') throw new Error("Expected ',' or '}' after an object property.");
+    afterComma = true;
+    await skipJsonWhitespace(reader);
+    if (await peekJsonCharacter(reader) === '}') throw new Error('Trailing commas are not allowed in JSON.');
+    afterComma = false;
+  }
+  if (afterComma) throw new Error('Unexpected end of JSON object.');
+  reader.consume();
+}
+
+async function skipLargeJsonValue(reader, firstCharacter) {
+  const raw = await scanJsonValue(reader, firstCharacter, firstCharacter !== '{' && firstCharacter !== '[');
+  if (raw !== undefined) parseJson(raw.trim());
+}
+
+async function readLargeJsonTablePreview(uri, onProgress) {
+  let stream;
+  let totalBytes;
+  if (uri.scheme === 'file') {
+    const stat = await fs.promises.stat(uri.fsPath);
+    totalBytes = stat.size;
+    stream = fs.createReadStream(uri.fsPath);
+  } else {
+    const contents = await vscode.workspace.fs.readFile(uri);
+    totalBytes = contents.byteLength;
+    stream = Readable.from([contents]);
+  }
+
+  const reader = new JsonFileReader(stream, onProgress, totalBytes);
+  const candidates = [];
+  let rootArray;
+  await skipJsonWhitespace(reader, true);
+  const rootCharacter = await nextJsonCharacter(reader);
+  if (rootCharacter === '[') {
+    rootArray = await readLargeJsonArray(reader, '$');
+    candidates.push(rootArray);
+  } else if (rootCharacter === '{') {
+    await readLargeJsonObject(reader, '', candidates);
+  } else {
+    throw new Error('Large-file table preview requires a root array or an array inside a root object.');
+  }
+
+  await skipJsonWhitespace(reader);
+  if (await nextJsonCharacter(reader) !== undefined) throw new Error('Unexpected content after the JSON value.');
+
+  const objectCandidates = candidates.filter(candidate => candidate.rowCount > 0 && candidate.onlyObjects);
+  const scalarCandidates = candidates.filter(candidate => candidate.rowCount > 1 && candidate.onlyScalars);
+  let selected;
+  if (objectCandidates.length > 0) {
+    objectCandidates.sort((left, right) =>
+      Number(right.rowCount > 1) - Number(left.rowCount > 1) ||
+      right.columns.size - left.columns.size || right.rowCount - left.rowCount
+    );
+    selected = objectCandidates[0];
+  } else if (scalarCandidates.length > 0) {
+    scalarCandidates.sort((left, right) => right.rowCount - left.rowCount);
+    selected = scalarCandidates[0];
+  } else {
+    selected = rootArray || candidates[0];
+  }
+  if (!selected) throw new Error('No table array was found in this large JSON file.');
+
+  const columns = selected.onlyScalars ? ['Value'] : [...selected.columns];
+  if (columns.length === 0) columns.push('Value');
+  if (selected.rows.length === 0) selected.rows.push({ Value: '[]' });
+  return {
+    sourcePath: selected.sourcePath,
+    columns: columns.slice(0, JSON_PREVIEW_MAX_COLUMNS),
+    sourceColumnCount: columns.length,
+    rows: selected.rows,
+    totalRows: selected.rowCount || 1,
+    isPartial: selected.rowCount > selected.rows.length,
+    isLargeFile: true
+  };
+}
 
 function formatPreviewValue(value) {
   if (value === null) return 'null';
@@ -417,7 +966,9 @@ function queryJsonTable(preview, request = {}) {
     page,
     pageSize,
     totalRows: filteredRows.length,
-    sourceTotalRows: preview.totalRows
+    sourceTotalRows: preview.totalRows,
+    previewedRows: preview.rows.length,
+    isPartial: preview.isPartial === true
   };
 }
 
@@ -749,6 +1300,11 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
   const columnNote = preview.sourceColumnCount > JSON_PREVIEW_MAX_COLUMNS
     ? `<p class="description">Showing the first ${JSON_PREVIEW_MAX_COLUMNS} of ${preview.sourceColumnCount.toLocaleString()} columns.</p>`
     : '';
+  const largeFileNote = preview.isLargeFile
+    ? `<p class="description">Large-file preview reads the saved file from disk. ${preview.isPartial
+      ? `Showing the first ${preview.rows.length.toLocaleString()} of ${preview.totalRows.toLocaleString()} rows; filtering covers these loaded rows only, and Excel export is unavailable for a partial preview.`
+      : `All ${preview.totalRows.toLocaleString()} rows are loaded. Save changes before refreshing the preview.`}</p>`
+    : '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -804,7 +1360,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
   <div class="title-bar">
     <h1>${escapeHtml(fileName)}</h1>
     <div class="title-actions">
-      <button id="export-excel" class="excel-export-button" type="button" title="Export all filtered rows as an Excel workbook (.xlsx)" aria-label="Export all filtered rows as an Excel workbook (.xlsx)"><span class="excel-mark" aria-hidden="true">X</span><span>Export</span></button>
+      <button id="export-excel" class="excel-export-button" type="button"${preview.isPartial ? ' disabled title="Export is unavailable for a partial large-file preview" aria-label="Export is unavailable for a partial large-file preview"' : ' title="Export all filtered rows as an Excel workbook (.xlsx)" aria-label="Export all filtered rows as an Excel workbook (.xlsx)"'}><span class="excel-mark" aria-hidden="true">X</span><span>Export</span></button>
       <button id="exact-filter" class="icon-button" data-exact-match="false" type="button" aria-pressed="false" title="Exact filtering off" aria-label="Exact filtering off"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7z"/><path d="M16 17h6M16 20h6"/></svg></button>
       <button id="refresh-preview" class="icon-button" type="button" title="Refresh preview" aria-label="Refresh preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-4L3 10"/><path d="M3 4v6h6"/><path d="M4 13a8 8 0 0 0 14.9 4L21 14"/><path d="M21 20v-6h-6"/></svg></button>
       <button id="window-action" class="icon-button" data-window-mode="main" type="button" title="Pop out preview" aria-label="Pop out preview"><svg class="pop-out-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7"/><path d="M10 14 21 3"/><path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></svg><svg class="pop-in-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 3 12 12"/><path d="M12 6v6h6"/><path d="M15 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h7"/></svg></button>
@@ -815,6 +1371,7 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
     <span id="result-count" aria-live="polite"></span>
   </div>
   ${columnNote}
+  ${largeFileNote}
   <div class="meta"><span id="source-path">Path: ${escapeHtml(preview.sourcePath || '$')}</span></div>
   <div class="table-pagination">
     <div id="page-info" class="page-info" aria-live="polite">Loading JSON data…</div>
@@ -921,8 +1478,10 @@ function renderJsonPreviewHtml(webview, fileName, preview) {
         page = result.page;
         pageInfo.textContent = result.totalRows === 0
           ? '0 rows'
-          : 'Page ' + (page + 1).toLocaleString() + ' of ' + pages.toLocaleString() + ' · ' + result.totalRows.toLocaleString() + ' rows';
-        resultCount.textContent = result.totalRows.toLocaleString() + ' matching / ' + result.sourceTotalRows.toLocaleString() + ' rows';
+          : 'Page ' + (page + 1).toLocaleString() + ' of ' + pages.toLocaleString() + ' · ' + result.totalRows.toLocaleString() + (result.isPartial ? ' loaded matching rows' : ' rows');
+        resultCount.textContent = result.isPartial
+          ? result.totalRows.toLocaleString() + ' matching / ' + result.previewedRows.toLocaleString() + ' loaded of ' + result.sourceTotalRows.toLocaleString() + ' rows'
+          : result.totalRows.toLocaleString() + ' matching / ' + result.sourceTotalRows.toLocaleString() + ' rows';
         sourcePath.textContent = 'Path: ' + result.sourcePath;
         status.textContent = result.totalRows === 0 ? 'No matching rows.' : '';
         previous.disabled = page <= 0;
@@ -951,6 +1510,8 @@ function activate(context) {
   const previewPanels = new Map();
   const previewWindowModes = new Map();
   const previewModels = new Map();
+  const previewSourceUris = new Map();
+  const largePreviewUris = new Set();
   const previewTimers = new Map();
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   statusBar.name = 'AnyaJSON JSON Lint';
@@ -972,28 +1533,60 @@ function activate(context) {
   };
 
   const previewJsonCommand = async (resource) => {
-    let document;
-    try {
-      document = await resolveJsonDocument(resource);
-    } catch (error) {
-      void vscode.window.showErrorMessage(errorMessage(error));
-      return;
-    }
-    if (!document) {
+    const activeDocument = vscode.window.activeTextEditor?.document;
+    const sourceUri = resource || activeDocument?.uri;
+    if (!sourceUri) {
       void vscode.window.showWarningMessage('Select or open a JSON file before previewing it as a table.');
       return;
     }
 
-    const uri = document.uri.toString();
-    const fileName = path.basename(document.uri.fsPath) || 'Untitled JSON';
+    const fileName = path.basename(sourceUri.fsPath || sourceUri.path || '') || 'Untitled JSON';
+    const uri = sourceUri.toString();
+    let document;
     let preview;
+    let isLargeFile = false;
     try {
-      preview = buildJsonTablePreview(document.getText());
+      const openSourceDocument = vscode.workspace.textDocuments.find(item => item.uri.toString() === uri);
+      const sourceExtension = path.extname(sourceUri.fsPath || sourceUri.path || '').toLowerCase();
+      if (!isJsonDocument(openSourceDocument) && sourceExtension !== '.json') {
+        void vscode.window.showWarningMessage('Select or open a JSON file before previewing it as a table.');
+        return;
+      }
+      try {
+        const fileStat = await vscode.workspace.fs.stat(sourceUri);
+        isLargeFile = fileStat.size > JSON_LARGE_FILE_THRESHOLD;
+      } catch (error) {
+        if (sourceUri.scheme === 'file') throw error;
+      }
+      if (isLargeFile) {
+        preview = await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: `Reading ${fileName} for AnyaJSON preview`,
+          cancellable: false
+        }, progress => {
+          let reportedBytes = 0;
+          return readLargeJsonTablePreview(sourceUri, (read, total) => {
+            const increment = total ? 100 * (read - reportedBytes) / total : 0;
+            reportedBytes = read;
+            progress.report({ increment, message: total ? `${Math.min(100, Math.round(100 * read / total))}%` : undefined });
+          });
+        });
+      } else {
+        document = await resolveJsonDocument(resource);
+        if (!document) {
+          void vscode.window.showWarningMessage('Select or open a JSON file before previewing it as a table.');
+          return;
+        }
+        preview = buildJsonTablePreview(document.getText());
+      }
     } catch (error) {
-      void vscode.window.showErrorMessage(`Cannot preview invalid JSON: ${errorMessage(error)}`);
+      void vscode.window.showErrorMessage(`${isLargeFile ? 'Cannot preview large JSON file' : 'Cannot preview invalid JSON'}: ${errorMessage(error)}`);
       return;
     }
     previewModels.set(uri, preview);
+    previewSourceUris.set(uri, sourceUri);
+    if (isLargeFile) largePreviewUris.add(uri);
+    else largePreviewUris.delete(uri);
 
     let panel = previewPanels.get(uri);
     if (!panel) {
@@ -1025,6 +1618,25 @@ function activate(context) {
           return;
         }
         if (message?.type === 'refresh') {
+          const largeSourceUri = previewSourceUris.get(uri);
+          if (largePreviewUris.has(uri) && largeSourceUri) {
+            void vscode.window.withProgress({
+              location: vscode.ProgressLocation.Notification,
+              title: `Refreshing ${fileName} AnyaJSON preview`,
+              cancellable: false
+            }, progress => {
+              let reportedBytes = 0;
+              return readLargeJsonTablePreview(largeSourceUri, (read, total) => {
+                const increment = total ? 100 * (read - reportedBytes) / total : 0;
+                reportedBytes = read;
+                progress.report({ increment, message: total ? `${Math.min(100, Math.round(100 * read / total))}%` : undefined });
+              });
+            }).then(refreshed => {
+              previewModels.set(uri, refreshed);
+              panel.webview.html = renderJsonPreviewHtml(panel.webview, fileName, refreshed);
+            }, error => panel.webview.postMessage({ type: 'refreshError', message: errorMessage(error) }));
+            return;
+          }
           const sourceDocument = vscode.workspace.textDocuments.find(item => item.uri.toString() === uri);
           if (sourceDocument) refreshJsonPreview(sourceDocument);
           else void panel.webview.postMessage({ type: 'refreshError', message: 'The source document is no longer open.' });
@@ -1032,8 +1644,8 @@ function activate(context) {
         }
         if (message?.type === 'export') {
           const current = previewModels.get(uri);
-          if (current) {
-            void exportJsonPreviewForExcel(current, document.uri, message.filter, message.exactMatch === true)
+          if (current && !current.isPartial) {
+            void exportJsonPreviewForExcel(current, sourceUri, message.filter, message.exactMatch === true)
               .catch(error => vscode.window.showErrorMessage(`Could not export Excel workbook: ${errorMessage(error)}`));
           }
           return;
@@ -1056,6 +1668,8 @@ function activate(context) {
         messageListener.dispose();
         previewPanels.delete(uri);
         previewModels.delete(uri);
+        previewSourceUris.delete(uri);
+        largePreviewUris.delete(uri);
         previewWindowModes.delete(uri);
       });
       context.subscriptions.push({ dispose: () => { messageListener.dispose(); disposeListener.dispose(); } });
@@ -1199,6 +1813,43 @@ function activate(context) {
     vscode.commands.registerCommand('anyajson.minifyJson', (resource) => runTransform(resource, true)),
     vscode.commands.registerCommand('anyajson.previewJsonAsTable', previewJsonCommand),
     vscode.commands.registerCommand('anyajson.lintJson', async (resource) => {
+      const sourceUri = resource || vscode.window.activeTextEditor?.document.uri;
+      if (sourceUri?.scheme === 'file') {
+        try {
+          const fileStat = await fs.promises.stat(sourceUri.fsPath);
+          if (fileStat.size > JSON_LARGE_FILE_THRESHOLD) {
+            if (path.extname(sourceUri.fsPath).toLowerCase() !== '.json') {
+              void vscode.window.showWarningMessage('Select a JSON file before linting it.');
+              return;
+            }
+            const fileName = path.basename(sourceUri.fsPath);
+            const result = await vscode.window.withProgress({
+              location: vscode.ProgressLocation.Notification,
+              title: `Linting ${fileName}`,
+              cancellable: false
+            }, progress => {
+              let reportedBytes = 0;
+              return validateLargeJsonFile(sourceUri, (read, total) => {
+                const increment = total ? 100 * (read - reportedBytes) / total : 0;
+                reportedBytes = read;
+                progress.report({ increment, message: total ? `${Math.min(100, Math.round(100 * read / total))}%` : undefined });
+              });
+            });
+            if (result.isValid) {
+              void vscode.window.showInformationMessage(`${fileName} has no JSON syntax errors.`);
+            } else {
+              void vscode.window.showWarningMessage(
+                `${fileName} has a JSON syntax error at line ${result.line}, column ${result.column}: ${result.message}`
+              );
+            }
+            return;
+          }
+        } catch (error) {
+          void vscode.window.showErrorMessage(errorMessage(error));
+          return;
+        }
+      }
+
       let document;
       try {
         document = await resolveJsonDocument(resource);
@@ -1220,7 +1871,7 @@ function activate(context) {
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       const previewUri = event.document.uri.toString();
-      if (previewPanels.has(previewUri)) {
+      if (previewPanels.has(previewUri) && !largePreviewUris.has(previewUri)) {
         const previousPreviewTimer = previewTimers.get(previewUri);
         if (previousPreviewTimer) clearTimeout(previousPreviewTimer);
         previewTimers.set(previewUri, setTimeout(() => {
@@ -1344,4 +1995,4 @@ function deactivate() {
   // VS Code disposes subscriptions registered during activation.
 }
 
-module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows };
+module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows, validateLargeJsonFile };
