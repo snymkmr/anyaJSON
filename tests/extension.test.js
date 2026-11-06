@@ -177,3 +177,21 @@ test('validates JSON files directly from a stream and reports line and column', 
     message: 'Expected a JSON value.'
   });
 });
+
+test('indents with tabs by default and supports 2 or 4 spaces', () => {
+  const { resolveIndentOptions } = extension;
+  assert.deepEqual(resolveIndentOptions(undefined), { insertSpaces: false });
+  assert.deepEqual(resolveIndentOptions('tab'), { insertSpaces: false });
+  assert.deepEqual(resolveIndentOptions('bogus'), { insertSpaces: false });
+  assert.deepEqual(resolveIndentOptions('2'), { insertSpaces: true, tabSize: 2 });
+  assert.deepEqual(resolveIndentOptions('4'), { insertSpaces: true, tabSize: 4 });
+  assert.equal(transformJson('{"a":[1.0]}', false, resolveIndentOptions('tab')), '{\n\t"a": [\n\t\t1.0\n\t]\n}');
+});
+
+test('keeps literal _xHHHH_ text unchanged in Excel cells, including the case of x', () => {
+  const { escapeExcelText } = extension;
+  assert.equal(escapeExcelText('_x0041_'), '_x005F_x0041_');
+  assert.equal(escapeExcelText('_X00ff_'), '_x005F_X00ff_');
+  assert.equal(escapeExcelText('a\rb\u0001'), 'a_x000D_b_x0001_');
+  assert.equal(escapeExcelText('<&>"\''), '&lt;&amp;&gt;&quot;&apos;');
+});

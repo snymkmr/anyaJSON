@@ -993,7 +993,8 @@ function excelColumnName(columnNumber) {
 }
 
 function escapeExcelText(value) {
-  const text = String(value ?? '').replace(/_x([0-9a-f]{4})_/gi, '_x005F_x$1_');
+  // Escape the underscore of literal _xHHHH_ text so Excel keeps it as written (including the case of the x).
+  const text = String(value ?? '').replace(/_(x[0-9a-f]{4})_/gi, '_x005F_$1_');
   let escaped = '';
   for (const character of text) {
     const code = character.codePointAt(0);
@@ -1678,6 +1679,9 @@ function activate(context) {
     panel.title = `AnyaJSON: ${fileName}`;
     panel.webview.html = renderJsonPreviewHtml(panel.webview, fileName, preview);
     panel.reveal(vscode.ViewColumn.Beside);
+    // Webview panels open as preview (italic) tabs, which the next opened file replaces.
+    // Pin the panel so a large-file preview is not discarded and re-read.
+    if (panel.active) await vscode.commands.executeCommand('workbench.action.keepEditor');
   };
 
   const updateStatusBar = () => {
@@ -1775,11 +1779,7 @@ function activate(context) {
       ) ?? await vscode.window.showTextDocument(document);
       const version = document.version;
       const lineEnding = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-      const text = transformJson(document.getText(), minify, {
-        insertSpaces: editor.options.insertSpaces,
-        tabSize: editor.options.tabSize,
-        lineEnding
-      });
+      const text = transformJson(document.getText(), minify, { ...getIndentOptions(), lineEnding });
       if (document.version !== version) {
         throw new Error('The JSON document changed while conversion was running. Run the command again.');
       }
@@ -1797,11 +1797,7 @@ function activate(context) {
       provideDocumentFormattingEdits(document, options) {
         try {
           const lineEnding = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-          const formatted = transformJson(document.getText(), false, {
-            insertSpaces: options.insertSpaces,
-            tabSize: options.tabSize,
-            lineEnding
-          });
+          const formatted = transformJson(document.getText(), false, { ...getIndentOptions(), lineEnding });
           return [vscode.TextEdit.replace(fullDocumentRange(document), formatted)];
         } catch (error) {
           void vscode.window.showErrorMessage(errorMessage(error));
@@ -1980,6 +1976,15 @@ function formatStatusBarIssue(message) {
   return normalized.length > 80 ? `${normalized.slice(0, 79)}…` : normalized;
 }
 
+function resolveIndentOptions(indent) {
+  if (indent === '2' || indent === '4') return { insertSpaces: true, tabSize: Number(indent) };
+  return { insertSpaces: false };
+}
+
+function getIndentOptions() {
+  return resolveIndentOptions(vscode.workspace.getConfiguration('anyajson').get('indent', 'tab'));
+}
+
 function fullDocumentRange(document) {
   return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
 }
@@ -1995,4 +2000,4 @@ function deactivate() {
   // VS Code disposes subscriptions registered during activation.
 }
 
-module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows, validateLargeJsonFile };
+module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows, validateLargeJsonFile, resolveIndentOptions, escapeExcelText };
