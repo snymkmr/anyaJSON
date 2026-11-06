@@ -2,7 +2,7 @@
   "name": "anyajson",
   "displayName": "AnyaJSON",
   "description": "Format, minify, and lint JSON in VS Code.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "Sanyam",
   "repository": {
     "type": "git",
@@ -26,7 +26,8 @@
   ],
   "main": "./extension.js",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "package": "node -e \"require('fs').mkdirSync('dist',{recursive:true})\" && vsce package -o dist/"
   },
   "contributes": {
     "commands": [
@@ -104,6 +105,21 @@
     "configuration": {
       "title": "AnyaJSON",
       "properties": {
+        "anyajson.indent": {
+          "type": "string",
+          "enum": [
+            "tab",
+            "2",
+            "4"
+          ],
+          "enumDescriptions": [
+            "Indent each level with one tab.",
+            "Indent each level with 2 spaces.",
+            "Indent each level with 4 spaces."
+          ],
+          "default": "tab",
+          "description": "Indentation used by AnyaJSON: Format JSON Document and Format Document."
+        },
         "anyajson.lintOnChange": {
           "type": "boolean",
           "default": true,
@@ -116,5 +132,8 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^4.1.0"
   }
 }

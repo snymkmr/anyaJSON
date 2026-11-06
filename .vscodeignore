@@ -5,3 +5,4 @@
 *.vsix
 tests/**
 files/**
+dist/**
