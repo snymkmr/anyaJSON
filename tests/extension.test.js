@@ -195,3 +195,82 @@ test('keeps literal _xHHHH_ text unchanged in Excel cells, including the case of
   assert.equal(escapeExcelText('a\rb\u0001'), 'a_x000D_b_x0001_');
   assert.equal(escapeExcelText('<&>"\''), '&lt;&amp;&gt;&quot;&apos;');
 });
+
+test('lints strict JSON automatically but leaves JSON with Comments (jsonc) to explicit commands', () => {
+  const { isJsonDocument, isAutoLintedJsonDocument } = extension;
+  const doc = (languageId, fsPath, scheme = 'file') => ({ languageId, uri: { scheme, fsPath } });
+  assert.equal(isAutoLintedJsonDocument(doc('json', '/repo/data.json')), true);
+  assert.equal(isAutoLintedJsonDocument(doc('json', '', 'untitled')), true);
+  assert.equal(isAutoLintedJsonDocument(doc('plaintext', '/repo/huge.json')), true);
+  assert.equal(isAutoLintedJsonDocument(doc('jsonc', '/repo/tsconfig.json')), false);
+  assert.equal(isAutoLintedJsonDocument(doc('jsonc', '/repo/.vscode/settings.json')), false);
+  assert.equal(isAutoLintedJsonDocument(doc('typescript', '/repo/a.ts')), false);
+  assert.equal(isAutoLintedJsonDocument(undefined), false);
+  // Explicit Format, Minify, Lint and Preview commands still accept .json files opened as jsonc.
+  assert.equal(isJsonDocument(doc('jsonc', '/repo/tsconfig.json')), true);
+});
+
+test('"editor" indentation follows the file\'s editor options and leaves other settings unchanged', () => {
+  const { resolveIndentOptions } = extension;
+  assert.deepEqual(resolveIndentOptions('editor', { insertSpaces: true, tabSize: 2 }), { insertSpaces: true, tabSize: 2 });
+  assert.deepEqual(resolveIndentOptions('editor', { insertSpaces: true, tabSize: 4 }), { insertSpaces: true, tabSize: 4 });
+  assert.deepEqual(resolveIndentOptions('editor', { insertSpaces: false, tabSize: 4 }), { insertSpaces: false });
+  assert.deepEqual(resolveIndentOptions('editor', { insertSpaces: true, tabSize: 'auto' }), { insertSpaces: true, tabSize: 4 });
+  assert.deepEqual(resolveIndentOptions('editor', undefined), { insertSpaces: false });
+  // Explicit settings ignore the editor's options.
+  assert.deepEqual(resolveIndentOptions('tab', { insertSpaces: true, tabSize: 2 }), { insertSpaces: false });
+  assert.deepEqual(resolveIndentOptions('4', { insertSpaces: false, tabSize: 2 }), { insertSpaces: true, tabSize: 4 });
+  assert.equal(
+    transformJson('{"a":[1]}', false, resolveIndentOptions('editor', { insertSpaces: true, tabSize: 2 })),
+    '{\n  "a": [\n    1\n  ]\n}'
+  );
+});
+
+test('parses, lints and minifies very deeply nested JSON without overflowing the stack', () => {
+  const depth = 100000;
+  const arrays = '['.repeat(depth) + '1' + ']'.repeat(depth);
+  const objects = '{"a":'.repeat(depth) + 'null' + '}'.repeat(depth);
+  assert.equal(parseJson(arrays).root.type, 'array');
+  assert.equal(parseJson(objects).root.type, 'object');
+  assert.equal(transformJson(arrays, true), arrays);
+  assert.equal(transformJson(` ${objects}\n`, true), `${objects}\n`);
+
+  assert.throws(() => parseJson(arrays.slice(0, -1)), error =>
+    error.name === 'JsonSyntaxError' && error.offset === arrays.length - 1 && error.message === "Expected ',' or ']' after the array item.");
+  assert.throws(() => parseJson('['.repeat(depth) + '1,]' + ']'.repeat(depth - 1)), error =>
+    error.name === 'JsonSyntaxError' && error.message === 'Trailing commas are not allowed in JSON.');
+});
+
+test('formats deep nesting that fits, and explains when indented output would be too large', () => {
+  const depth = 3000;
+  const nested = '['.repeat(depth) + ']'.repeat(depth);
+  const formatted = transformJson(nested, false, { insertSpaces: true, tabSize: 2 });
+  assert.equal(formatted.split('\n').length, 2 * depth - 1);
+  assert.equal(transformJson(formatted, true), nested);
+
+  const tooDeep = '['.repeat(100000) + '1' + ']'.repeat(100000);
+  assert.throws(() => transformJson(tooDeep, false, { insertSpaces: false }), /too large to create because the document is very deeply nested/);
+});
+
+test('table preview reports extreme nesting clearly and still previews normal JSON', () => {
+  const { buildJsonTablePreview } = extension;
+  const preview = buildJsonTablePreview('[{"a":1,"b":{"c":"x"}},{"a":2}]');
+  assert.deepEqual(preview.columns, ['a', 'b.c']);
+  assert.equal(preview.totalRows, 2);
+  assert.throws(() => buildJsonTablePreview('['.repeat(100000) + ']'.repeat(100000)), /nested too deeply to preview/);
+  assert.throws(() => buildJsonTablePreview('[1,]'), error => error.name === 'JsonSyntaxError');
+});
+
+test('large-file validation handles very deep nesting', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'anyajson-deep-lint-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const depth = 200000;
+  const validPath = path.join(directory, 'deep.json');
+  const invalidPath = path.join(directory, 'deep-invalid.json');
+  await fs.writeFile(validPath, '['.repeat(depth) + ']'.repeat(depth));
+  await fs.writeFile(invalidPath, '['.repeat(depth) + ']'.repeat(depth - 1));
+  assert.deepEqual(await validateLargeJsonFile({ fsPath: validPath }), { isValid: true });
+  const invalid = await validateLargeJsonFile({ fsPath: invalidPath });
+  assert.equal(invalid.isValid, false);
+  assert.equal(invalid.message, "Expected ',' or ']' after the array item.");
+});

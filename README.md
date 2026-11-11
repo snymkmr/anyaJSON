@@ -19,7 +19,7 @@ For files larger than 50 MB, right-click the saved JSON file in Explorer and run
 
 ## Settings
 
-- `anyajson.indent`: indentation for formatting, `tab` (default), `2` or `4` spaces.
+- `anyajson.indent`: indentation for formatting, `tab` (default), `2` or `4` spaces, or `editor` to follow the file's editor indentation (tabs or spaces and tab size).
 - `anyajson.lintOnChange`: lint after edits, default `true`.
 - `anyajson.lintOnSave`: lint on save, default `true`.
 
@@ -27,4 +27,4 @@ AnyaJSON accepts strict JSON syntax. Comments and trailing commas are not valid 
 
 ## Privacy
 
-See the [Privacy Policy](https://sanyam.dev/privacy) for privacy information about my projects.
+See the [Privacy Policy](https://privacy.sanyam.dev) for privacy information about my projects.

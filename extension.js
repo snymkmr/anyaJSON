@@ -123,42 +123,83 @@ function parseJson(text) {
     return { type: 'scalar', raw: text.slice(start, offset) };
   }
 
-  function readValue() {
+  // Reads ':' after a property name; called with the offset on the opening quote.
+  function readPropertyName(frame) {
+    if (text[offset] !== '"') {
+      fail("Expected a quoted property name or '}'.", offset);
+    }
+    frame.key = readString();
+    skipWhitespace();
+    if (text[offset] !== ':') {
+      fail("Expected ':' after the property name.", offset);
+    }
+    offset += 1;
+  }
+
+  // Containers are tracked on an explicit stack instead of by recursion, so deeply
+  // nested JSON cannot overflow the call stack.
+  const stack = [];
+  let root;
+  skipWhitespace();
+  parse: while (true) {
     skipWhitespace();
     if (offset >= text.length) {
       fail('Expected a JSON value.', offset);
     }
 
     const character = text[offset];
+    let node;
     if (character === '"') {
-      return { type: 'scalar', raw: readString() };
-    }
-    if (character === '{') {
+      node = { type: 'scalar', raw: readString() };
+    } else if (character === '{') {
       offset += 1;
       skipWhitespace();
-      const properties = [];
+      node = { type: 'object', properties: [] };
       if (text[offset] === '}') {
         offset += 1;
-        return { type: 'object', properties };
+      } else {
+        const frame = { node, key: undefined };
+        stack.push(frame);
+        readPropertyName(frame);
+        continue;
       }
-
-      while (true) {
-        if (text[offset] !== '"') {
-          fail("Expected a quoted property name or '}'.", offset);
-        }
-        const key = readString();
-        skipWhitespace();
-        if (text[offset] !== ':') {
-          fail("Expected ':' after the property name.", offset);
-        }
+    } else if (character === '[') {
+      offset += 1;
+      skipWhitespace();
+      node = { type: 'array', items: [] };
+      if (text[offset] === ']') {
         offset += 1;
-        const value = readValue();
-        properties.push({ key, value });
-        skipWhitespace();
+      } else {
+        stack.push({ node });
+        continue;
+      }
+    } else if (character === '-' || /[0-9]/.test(character)) {
+      node = readNumber();
+    } else if (character === 't') {
+      node = readLiteral('true');
+    } else if (character === 'f') {
+      node = readLiteral('false');
+    } else if (character === 'n') {
+      node = readLiteral('null');
+    } else {
+      fail('Expected a JSON value.', offset);
+    }
 
+    // Add the finished value to its container, closing containers that end here.
+    while (true) {
+      const frame = stack[stack.length - 1];
+      if (!frame) {
+        root = node;
+        break parse;
+      }
+      if (frame.node.type === 'object') {
+        frame.node.properties.push({ key: frame.key, value: node });
+        skipWhitespace();
         if (text[offset] === '}') {
           offset += 1;
-          return { type: 'object', properties };
+          stack.pop();
+          node = frame.node;
+          continue;
         }
         if (text[offset] !== ',') {
           fail("Expected ',' or '}' after the property value.", offset);
@@ -168,44 +209,30 @@ function parseJson(text) {
         if (text[offset] === '}') {
           fail('Trailing commas are not allowed in JSON.', offset);
         }
+        readPropertyName(frame);
+        continue parse;
       }
-    }
-    if (character === '[') {
-      offset += 1;
+
+      frame.node.items.push(node);
       skipWhitespace();
-      const items = [];
       if (text[offset] === ']') {
         offset += 1;
-        return { type: 'array', items };
+        stack.pop();
+        node = frame.node;
+        continue;
       }
-
-      while (true) {
-        items.push(readValue());
-        skipWhitespace();
-        if (text[offset] === ']') {
-          offset += 1;
-          return { type: 'array', items };
-        }
-        if (text[offset] !== ',') {
-          fail("Expected ',' or ']' after the array item.", offset);
-        }
-        offset += 1;
-        skipWhitespace();
-        if (text[offset] === ']') {
-          fail('Trailing commas are not allowed in JSON.', offset);
-        }
+      if (text[offset] !== ',') {
+        fail("Expected ',' or ']' after the array item.", offset);
       }
+      offset += 1;
+      skipWhitespace();
+      if (text[offset] === ']') {
+        fail('Trailing commas are not allowed in JSON.', offset);
+      }
+      continue parse;
     }
-    if (character === '-') return readNumber();
-    if (/[0-9]/.test(character)) return readNumber();
-    if (character === 't') return readLiteral('true');
-    if (character === 'f') return readLiteral('false');
-    if (character === 'n') return readLiteral('null');
-    fail('Expected a JSON value.', offset);
   }
 
-  skipWhitespace();
-  const root = readValue();
   skipWhitespace();
   if (offset < text.length) {
     fail('Unexpected content after the JSON value.', offset);
@@ -213,21 +240,80 @@ function parseJson(text) {
   return { root, hasBom };
 }
 
-function serializeJson(node, indentUnit, lineEnding, depth = 0) {
+function serializeJson(node, indentUnit, lineEnding) {
+  try {
+    return serializeJsonRecursive(node, indentUnit, lineEnding, 0);
+  } catch (error) {
+    // Very deep nesting overflows the call stack; fall back to the iterative serializer,
+    // which produces the same text without recursion.
+    if (error instanceof RangeError) return serializeJsonIterative(node, indentUnit, lineEnding, 0);
+    throw error;
+  }
+}
+
+function serializeJsonRecursive(node, indentUnit, lineEnding, depth = 0) {
   if (node.type === 'scalar') return node.raw;
 
   const indent = (level) => indentUnit.repeat(level);
   if (node.type === 'array') {
     if (node.items.length === 0) return '[]';
-    const items = node.items.map((item) => `${indent(depth + 1)}${serializeJson(item, indentUnit, lineEnding, depth + 1)}`);
+    const items = node.items.map((item) => `${indent(depth + 1)}${serializeJsonRecursive(item, indentUnit, lineEnding, depth + 1)}`);
     return `[${lineEnding}${items.join(`,${lineEnding}`)}${lineEnding}${indent(depth)}]`;
   }
 
   if (node.properties.length === 0) return '{}';
   const properties = node.properties.map(({ key, value }) =>
-    `${indent(depth + 1)}${key}${indentUnit === '' ? ':' : ': '}${serializeJson(value, indentUnit, lineEnding, depth + 1)}`
+    `${indent(depth + 1)}${key}${indentUnit === '' ? ':' : ': '}${serializeJsonRecursive(value, indentUnit, lineEnding, depth + 1)}`
   );
   return `{${lineEnding}${properties.join(`,${lineEnding}`)}${lineEnding}${indent(depth)}}`;
+}
+
+// Same output as serializeJsonRecursive, using an explicit stack so deeply nested JSON
+// cannot overflow the call stack.
+function serializeJsonIterative(root, indentUnit, lineEnding, depth = 0) {
+  let output = '';
+  const separator = indentUnit === '' ? ':' : ': ';
+  const indents = [];
+  const indent = (level) => indents[level] ??= indentUnit.repeat(level);
+  const stack = [{ node: root, depth, index: -1 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const { node } = frame;
+    if (node.type === 'scalar') {
+      output += node.raw;
+      stack.pop();
+      continue;
+    }
+
+    const isArray = node.type === 'array';
+    const children = isArray ? node.items : node.properties;
+    if (frame.index === -1) {
+      if (children.length === 0) {
+        output += isArray ? '[]' : '{}';
+        stack.pop();
+        continue;
+      }
+      output += isArray ? '[' : '{';
+    } else if (frame.index + 1 < children.length) {
+      output += ',';
+    }
+
+    frame.index += 1;
+    if (frame.index < children.length) {
+      output += lineEnding + indent(frame.depth + 1);
+      const child = children[frame.index];
+      if (isArray) {
+        stack.push({ node: child, depth: frame.depth + 1, index: -1 });
+      } else {
+        output += child.key + separator;
+        stack.push({ node: child.value, depth: frame.depth + 1, index: -1 });
+      }
+    } else {
+      output += lineEnding + indent(frame.depth) + (isArray ? ']' : '}');
+      stack.pop();
+    }
+  }
+  return output;
 }
 
 function transformJson(text, minify, options = {}) {
@@ -235,13 +321,21 @@ function transformJson(text, minify, options = {}) {
   const sourceHasFinalNewline = /(?:\r\n|\n|\r)$/.test(text);
   let result;
 
-  if (minify) {
-    result = serializeJson(root, '', '', 0);
-  } else {
-    const useSpaces = options.insertSpaces !== false;
-    const tabSize = Number.isInteger(options.tabSize) ? Math.max(1, Math.min(options.tabSize, 16)) : 2;
-    const indentUnit = useSpaces ? ' '.repeat(tabSize) : '\t';
-    result = serializeJson(root, indentUnit, options.lineEnding || '\n', 0);
+  try {
+    if (minify) {
+      result = serializeJson(root, '', '');
+    } else {
+      const useSpaces = options.insertSpaces !== false;
+      const tabSize = Number.isInteger(options.tabSize) ? Math.max(1, Math.min(options.tabSize, 16)) : 2;
+      const indentUnit = useSpaces ? ' '.repeat(tabSize) : '\t';
+      result = serializeJson(root, indentUnit, options.lineEnding || '\n');
+    }
+  } catch (error) {
+    // Indenting extremely deep nesting can exceed JavaScript's maximum string length.
+    if (error instanceof RangeError) {
+      throw new Error(`The ${minify ? 'minified' : 'formatted'} JSON is too large to create because the document is very deeply nested. The document was not changed.`);
+    }
+    throw error;
   }
 
   if (hasBom) result = `\uFEFF${result}`;
@@ -680,8 +774,10 @@ async function readLargeJsonArray(reader, sourcePath) {
     } catch (error) {
       throw new Error(`Invalid JSON at row ${candidate.rowCount + 1}: ${error.message}`);
     }
-    const value = materializeJsonNode(node);
-    const row = isRecord(value) ? flattenJsonRecord(value) : { Value: formatPreviewValue(value) };
+    const row = withPreviewNestingLimit(() => {
+      const value = materializeJsonNode(node);
+      return isRecord(value) ? flattenJsonRecord(value) : { Value: formatPreviewValue(value) };
+    });
     if (Object.keys(row).length === 0) row.Value = '{}';
     candidate.rowCount += 1;
     candidate.onlyObjects &&= node.type === 'object';
@@ -872,8 +968,25 @@ function collectJsonColumns(rows) {
   return [...columns];
 }
 
+const JSON_PREVIEW_TOO_DEEP_MESSAGE = 'This JSON is nested too deeply to preview as a table. Linting, formatting and minifying still work.';
+
+// The table-preview helpers walk values recursively; turn a stack overflow on extremely
+// deep nesting into a clear message instead of "Maximum call stack size exceeded".
+function withPreviewNestingLimit(build) {
+  try {
+    return build();
+  } catch (error) {
+    if (error instanceof RangeError) throw new Error(JSON_PREVIEW_TOO_DEEP_MESSAGE);
+    throw error;
+  }
+}
+
 function buildJsonTablePreview(text) {
   const { root } = parseJson(text);
+  return withPreviewNestingLimit(() => buildJsonTablePreviewFromRoot(root));
+}
+
+function buildJsonTablePreviewFromRoot(root) {
   const value = materializeJsonNode(root);
   const objectCandidates = [];
   const scalarCandidates = [];
@@ -1581,7 +1694,8 @@ function activate(context) {
         preview = buildJsonTablePreview(document.getText());
       }
     } catch (error) {
-      void vscode.window.showErrorMessage(`${isLargeFile ? 'Cannot preview large JSON file' : 'Cannot preview invalid JSON'}: ${errorMessage(error)}`);
+      const reason = isLargeFile ? 'Cannot preview large JSON file' : error instanceof JsonSyntaxError ? 'Cannot preview invalid JSON' : 'Cannot preview JSON';
+      void vscode.window.showErrorMessage(`${reason}: ${errorMessage(error)}`);
       return;
     }
     previewModels.set(uri, preview);
@@ -1686,7 +1800,7 @@ function activate(context) {
 
   const updateStatusBar = () => {
     const document = vscode.window.activeTextEditor?.document;
-    if (!isJsonDocument(document)) {
+    if (!isAutoLintedJsonDocument(document)) {
       statusBar.hide();
       return;
     }
@@ -1746,7 +1860,21 @@ function activate(context) {
   };
 
   const scheduleLint = (document) => {
-    if (!isJsonDocument(document)) return;
+    if (!isAutoLintedJsonDocument(document)) {
+      // JSON with Comments (tsconfig.json, .vscode/settings.json, …) allows comments and
+      // trailing commas, so drop any result left by an explicit "Lint JSON" run on it.
+      if (isJsonDocument(document)) {
+        const key = document.uri.toString();
+        const timer = validationTimers.get(key);
+        if (timer) clearTimeout(timer);
+        validationTimers.delete(key);
+        pendingValidations.delete(key);
+        validationStates.delete(key);
+        diagnostics.delete(document.uri);
+        updateStatusBar();
+      }
+      return;
+    }
     const key = document.uri.toString();
     const existingTimer = validationTimers.get(key);
     if (existingTimer) clearTimeout(existingTimer);
@@ -1779,7 +1907,7 @@ function activate(context) {
       ) ?? await vscode.window.showTextDocument(document);
       const version = document.version;
       const lineEnding = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-      const text = transformJson(document.getText(), minify, { ...getIndentOptions(), lineEnding });
+      const text = transformJson(document.getText(), minify, { ...getIndentOptions(document, editor.options), lineEnding });
       if (document.version !== version) {
         throw new Error('The JSON document changed while conversion was running. Run the command again.');
       }
@@ -1797,7 +1925,7 @@ function activate(context) {
       provideDocumentFormattingEdits(document, options) {
         try {
           const lineEnding = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-          const formatted = transformJson(document.getText(), false, { ...getIndentOptions(), lineEnding });
+          const formatted = transformJson(document.getText(), false, { ...getIndentOptions(document, options), lineEnding });
           return [vscode.TextEdit.replace(fullDocumentRange(document), formatted)];
         } catch (error) {
           void vscode.window.showErrorMessage(errorMessage(error));
@@ -1907,7 +2035,7 @@ function activate(context) {
     }),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       const document = editor?.document;
-      if (isJsonDocument(document) && !validationStates.has(document.uri.toString())) {
+      if (isAutoLintedJsonDocument(document) && !validationStates.has(document.uri.toString())) {
         scheduleLint(document);
       } else {
         updateStatusBar();
@@ -1924,7 +2052,7 @@ function activate(context) {
   );
 
   const activeDocument = vscode.window.activeTextEditor?.document;
-  if (isJsonDocument(activeDocument) && !validationStates.has(activeDocument.uri.toString())) {
+  if (isAutoLintedJsonDocument(activeDocument) && !validationStates.has(activeDocument.uri.toString())) {
     scheduleLint(activeDocument);
   } else {
     updateStatusBar();
@@ -1971,18 +2099,37 @@ function isJsonDocument(document) {
   ));
 }
 
+// Strict JSON documents that are linted automatically. VS Code opens some .json files
+// (tsconfig.json, .vscode/settings.json, launch.json, …) as JSON with Comments ("jsonc"),
+// where comments and trailing commas are valid, so those are only checked on request.
+function isAutoLintedJsonDocument(document) {
+  return isJsonDocument(document) && document.languageId !== 'jsonc';
+}
+
 function formatStatusBarIssue(message) {
   const normalized = message.replace(/\s+/g, ' ').trim();
   return normalized.length > 80 ? `${normalized.slice(0, 79)}…` : normalized;
 }
 
-function resolveIndentOptions(indent) {
+// `editorOptions` is the file's own { insertSpaces, tabSize } (from the formatter call or the
+// editor); it is used only when anyajson.indent is "editor".
+function resolveIndentOptions(indent, editorOptions) {
   if (indent === '2' || indent === '4') return { insertSpaces: true, tabSize: Number(indent) };
+  if (indent === 'editor' && editorOptions && editorOptions.insertSpaces === true) {
+    const tabSize = Number(editorOptions.tabSize);
+    return { insertSpaces: true, tabSize: Number.isInteger(tabSize) && tabSize > 0 ? tabSize : 4 };
+  }
   return { insertSpaces: false };
 }
 
-function getIndentOptions() {
-  return resolveIndentOptions(vscode.workspace.getConfiguration('anyajson').get('indent', 'tab'));
+function getIndentOptions(document, editorOptions) {
+  const indent = vscode.workspace.getConfiguration('anyajson', document?.uri).get('indent', 'tab');
+  if (indent !== 'editor' || editorOptions) return resolveIndentOptions(indent, editorOptions);
+  const editorConfig = vscode.workspace.getConfiguration('editor', document);
+  return resolveIndentOptions(indent, {
+    insertSpaces: editorConfig.get('insertSpaces', true),
+    tabSize: editorConfig.get('tabSize', 4)
+  });
 }
 
 function fullDocumentRange(document) {
@@ -2000,4 +2147,4 @@ function deactivate() {
   // VS Code disposes subscriptions registered during activation.
 }
 
-module.exports = { activate, deactivate, parseJson, transformJson, getFilteredJsonTableRows, validateLargeJsonFile, resolveIndentOptions, escapeExcelText };
+module.exports = { activate, deactivate, isJsonDocument, isAutoLintedJsonDocument, parseJson, transformJson, buildJsonTablePreview, serializeJsonIterative, getFilteredJsonTableRows, validateLargeJsonFile, resolveIndentOptions, escapeExcelText };
