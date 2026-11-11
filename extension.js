@@ -1913,6 +1913,10 @@ function activate(context) {
       }
       const applied = await editor.edit((edit) => edit.replace(fullDocumentRange(document), text));
       if (!applied) throw new Error('VS Code could not apply the JSON edits.');
+      // A whole-document replace moves the caret but leaves the old scroll position behind
+      // (e.g. scrolled far right on a long one-liner). Bring the caret back into view.
+      const caret = editor.selection.active;
+      editor.revealRange(new vscode.Range(caret, caret), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     } catch (error) {
       void vscode.window.showErrorMessage(errorMessage(error));
     }
